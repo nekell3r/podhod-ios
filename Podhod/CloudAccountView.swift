@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CloudAccountView: View {
     @Bindable var auth: CloudAuthentication
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -22,16 +23,23 @@ struct CloudAccountView: View {
                 Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
             if auth.signedIn {
+                Button("Привязать Telegram к аккаунту") {
+                    Task { if let url = await auth.accountManagementURL() { openURL(url) } }
+                }.font(.subheadline.weight(.semibold)).disabled(auth.isBusy)
                 Button("Отключить аккаунт", role: .destructive) {
                     Task { await auth.signOut() }
                 }.font(.subheadline.weight(.semibold)).disabled(auth.isBusy)
             } else {
                 Button {
-                    Task { await auth.signIn() }
-                } label: { Label("Войти в аккаунт", systemImage: "person.crop.circle") }
+                    Task { await auth.signInWithTelegram() }
+                } label: { Label("Войти через Telegram", systemImage: "paperplane") }
                     .buttonStyle(PrimaryButton()).disabled(auth.isBusy)
+                Button("Войти по логину") { Task { await auth.signIn() } }
+                    .font(.subheadline.weight(.semibold)).disabled(auth.isBusy)
+                Text("Уже пользуешься «Подходом»? Войди прежним способом и привяжи Telegram в настройках аккаунта — тогда история останется в том же аккаунте.")
+                    .font(.caption).foregroundStyle(Color.gymMuted).lineSpacing(3)
             }
-            Text("Вход откроется в системном браузере. Выход из аккаунта не удаляет записи тренировок с этого iPhone.")
+            Text("Вход откроется в системном браузере. Выход сохраняет архив аккаунта отдельно и открывает гостевой режим. Затем можно войти в другой аккаунт.")
                 .font(.caption).foregroundStyle(Color.gymMuted).lineSpacing(3)
         }.frame(maxWidth: .infinity, alignment: .leading).modifier(GymCard())
     }

@@ -8,6 +8,7 @@ final class WorkoutStore {
     private(set) var loadFailed = false
     @ObservationIgnored let fileURL: URL
     @ObservationIgnored private var migrationSourceVersion: Int?
+    @ObservationIgnored var accountStorageError: String?
 
     init(fileURL: URL? = nil) {
         self.fileURL = fileURL ?? URL.applicationSupportDirectory
@@ -49,6 +50,22 @@ final class WorkoutStore {
     var trainingCalendar: TrainingCalendar { TrainingCalendar(timezone: archive.timezone ?? TimeZone.current.identifier) }
 
     var today: TrainingDay { scheduledWeek(containing: Date()).day(on: Date(), calendar: trainingCalendar) }
+
+    @discardableResult
+    func pauseTimingForAccountSwitch(date: Date = Date()) -> Bool {
+        guard archive.active != nil else { return true }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        changed.active?.timing?.transition(to: nil, at: now)
+        return save(changed)
+    }
+
+    func resumeAccountTiming(date: Date = Date()) {
+        guard archive.active != nil else { return }
+        var changed = archive
+        changed.reconcileActiveTiming(at: date)
+        if changed != archive { save(changed) }
+    }
 
     func scheduledWeek(containing date: Date) -> TrainingWeek {
         let key = trainingCalendar.dayKey(for: trainingCalendar.weekStart(containing: date))
@@ -142,7 +159,7 @@ final class WorkoutStore {
 
     @discardableResult
     private func save(_ changed: TrainingArchive) -> Bool {
-        guard !loadFailed else {
+        guard !loadFailed, accountStorageError == nil else {
             errorMessage = "Сохранение недоступно: исходный файл не удалось прочитать. Данные защищены от перезаписи."
             return false
         }

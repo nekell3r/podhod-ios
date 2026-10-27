@@ -64,6 +64,7 @@ final class ProteinTracker {
     var errorMessage: String?
     @ObservationIgnored let fileURL: URL
     @ObservationIgnored private let fixedCalendar: TrainingCalendar?
+    @ObservationIgnored var accountStorageError: String?
 
     init(fileURL: URL? = nil, calendar: TrainingCalendar? = nil) {
         self.fileURL = fileURL ?? URL.applicationSupportDirectory
@@ -96,7 +97,7 @@ final class ProteinTracker {
 
     @discardableResult
     func setTaken(period: ProteinPeriod, on date: Date, taken: Bool) -> Bool {
-        guard !loadFailed else {
+        guard !loadFailed, accountStorageError == nil else {
             errorMessage = ProteinStorageError.invalidRecord.localizedDescription
             return false
         }
@@ -111,7 +112,7 @@ final class ProteinTracker {
 
     @discardableResult
     func replaceDay(_ record: ProteinDayRecord) -> Bool {
-        guard !loadFailed, isValid(record) else {
+        guard !loadFailed, accountStorageError == nil, isValid(record) else {
             errorMessage = ProteinStorageError.invalidRecord.localizedDescription
             return false
         }

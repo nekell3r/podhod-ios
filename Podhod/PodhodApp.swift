@@ -7,21 +7,33 @@ struct PodhodApp: App {
     @State private var sync: CloudSynchronization
     @State private var protein: ProteinTracker
     @State private var reminders: ProteinReminders
+    @State private var workspaces: AccountWorkspaces
+    @State private var workspaceRevision = UUID()
 
     init() {
-        let store = WorkoutStore()
+        let workspaces = AccountWorkspaces()
+        let store = WorkoutStore(fileURL: workspaces.currentDirectory.appending(path: "training.json"))
         let auth = CloudAuthentication()
-        let protein = ProteinTracker()
+        let protein = ProteinTracker(fileURL: workspaces.currentDirectory.appending(path: "protein.json"))
+        store.accountStorageError = workspaces.errorMessage
+        protein.accountStorageError = workspaces.errorMessage
+        if let error = workspaces.errorMessage { store.errorMessage = error }
         _store = State(initialValue: store)
         _auth = State(initialValue: auth)
         _sync = State(initialValue: CloudSynchronization(store: store, auth: auth, protein: protein))
         _protein = State(initialValue: protein)
         _reminders = State(initialValue: ProteinReminders())
+        _workspaces = State(initialValue: workspaces)
     }
 
     var body: some Scene {
         WindowGroup {
             RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders)
+                .id(workspaceRevision)
+                .onAppear { sync.accountDiscovered = { switchAccount(to: $0) } }
+                .onChange(of: auth.sessionID) { _, _ in
+                    if !auth.signedIn { _ = switchAccount(to: nil) }
+                }
                 .preferredColorScheme(.dark)
                 .tint(.gymLime)
                 #if os(macOS)
@@ -32,6 +44,30 @@ struct PodhodApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 430, height: 860)
         #endif
+    }
+
+    private func switchAccount(to accountID: String?) -> Bool {
+        if !workspaces.isLegacy && workspaces.accountID == accountID { return false }
+        do {
+            guard !store.loadFailed, !protein.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
+            guard store.pauseTimingForAccountSwitch() else { throw TrainingError.invalidArchive }
+            let directory = try workspaces.prepare(accountID: accountID, legacyAccountID: sync.accountID)
+            let nextStore = WorkoutStore(fileURL: directory.appending(path: "training.json"))
+            let nextProtein = ProteinTracker(fileURL: directory.appending(path: "protein.json"))
+            let nextSync = CloudSynchronization(store: nextStore, auth: auth, protein: nextProtein)
+            guard !nextStore.loadFailed, !nextProtein.loadFailed, nextSync.storageReady,
+                  nextSync.accountID == nil || nextSync.accountID == accountID else { throw TrainingError.invalidArchive }
+            try workspaces.commit(accountID: accountID)
+            store = nextStore
+            protein = nextProtein
+            sync = nextSync
+            nextStore.resumeAccountTiming()
+            workspaceRevision = UUID()
+            return true
+        } catch {
+            store.errorMessage = "Не удалось открыть архив аккаунта. Все исходные файлы сохранены."
+            return true
+        }
     }
 }
 

@@ -28,6 +28,9 @@ final class CloudSynchronization {
     private(set) var conflict: TrainingSyncConflict?
     private(set) var lastSyncedAt: Date?
     var focusedWeekStart: String?
+    @ObservationIgnored var accountDiscovered: ((String) -> Bool)?
+    var accountID: String? { checkpoint.accountID }
+    var storageReady: Bool { checkpointError == nil }
     @ObservationIgnored private var checkpoint = TrainingSyncCheckpoint()
     @ObservationIgnored private var checkpointError: String?
     @ObservationIgnored private var lastCheckpointData: Data?
@@ -79,6 +82,7 @@ final class CloudSynchronization {
         let api = TrainingCloudAPI(auth: auth)
         do {
             let profile = try await api.profile()
+            if accountDiscovered?(profile.id) == true { return }
             guard checkpoint.accountID == nil || checkpoint.accountID == profile.id else {
                 message = "Этот iPhone связан с другим аккаунтом. Локальные данные не отправлены."
                 return

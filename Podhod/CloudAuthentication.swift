@@ -141,7 +141,24 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
         }
     }
 
-    func signIn() async {
+    func signIn() async { await signIn(identityProvider: nil) }
+
+    func signInWithTelegram() async { await signIn(identityProvider: "telegram") }
+
+    func accountManagementURL() async -> URL? {
+        do {
+            let provider = try await loadProvider()
+            let issuer = try Self.httpsURL(provider.configuration.issuer)
+            var components = URLComponents(url: issuer.appending(path: "account/"), resolvingAgainstBaseURL: false)
+            components?.fragment = "/linked-accounts"
+            return components?.url
+        } catch {
+            errorMessage = "Не удалось открыть управление аккаунтом. Проверь соединение."
+            return nil
+        }
+    }
+
+    private func signIn(identityProvider: String?) async {
         guard !isBusy, !signedIn else { return }
         isBusy = true
         errorMessage = nil
@@ -164,8 +181,12 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
                 URLQueryItem(name: "scope", value: provider.configuration.scopes.joined(separator: " ")),
                 URLQueryItem(name: "state", value: state),
                 URLQueryItem(name: "code_challenge", value: challenge),
-                URLQueryItem(name: "code_challenge_method", value: "S256")
+                URLQueryItem(name: "code_challenge_method", value: "S256"),
+                URLQueryItem(name: "prompt", value: "login")
             ]
+            if let identityProvider {
+                components.queryItems?.append(URLQueryItem(name: "kc_idp_hint", value: identityProvider))
+            }
             guard let authorizationURL = components.url else { throw CloudAuthenticationError.configuration }
             try checkOperation(operation)
             let callback = try await authenticate(at: authorizationURL)
