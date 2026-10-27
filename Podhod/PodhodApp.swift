@@ -175,7 +175,7 @@ struct CloudSettingsView: View {
                                     .buttonStyle(.bordered).disabled(sync.isSyncing)
                             }
                         } else {
-                            Button { Task { await sync.synchronize() } } label: {
+                            Button { Task { await sync.synchronize(); await auth.refreshProfile() } } label: {
                                 Label("Синхронизировать сейчас", systemImage: "arrow.triangle.2.circlepath")
                             }.buttonStyle(PrimaryButton()).disabled(!auth.signedIn || sync.isSyncing)
                         }

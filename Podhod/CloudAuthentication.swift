@@ -113,6 +113,9 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
     private(set) var isBusy = false
     private(set) var status = "Вход не выполнен"
     var errorMessage: String?
+    private(set) var accountDetails: CloudAccountDetails?
+    private(set) var profileLoading = false
+    private(set) var profileError: String?
 
     @ObservationIgnored private var credentials: CloudOAuthCredentials?
     @ObservationIgnored private var browserSession: ASWebAuthenticationSession?
@@ -214,9 +217,48 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
         }
     }
 
-    func accessToken() async throws -> String {
+    func refreshProfile() async {
+        guard signedIn, !profileLoading else { return }
+        let operation = generation
+        profileLoading = true
+        profileError = nil
+        defer { if operation == generation { profileLoading = false } }
+        do {
+            let provider = try await loadProvider()
+            let issuer = try Self.httpsURL(provider.configuration.issuer)
+            for attempt in 0...1 {
+                do {
+                    let token = try await accessToken(forceRefresh: attempt > 0)
+                    let expected = try await TrainingCloudAPI(auth: self).profile().id
+                    let profileData = try await accountData(at: issuer.appending(path: "account/"), token: token)
+                    let linksData = try await accountData(at: issuer.appending(path: "account/linked-accounts"), token: token)
+                    let profile = try JSONDecoder().decode(CloudAccountProfile.self, from: profileData)
+                    let links = try JSONDecoder().decode([CloudAccountLink].self, from: linksData)
+                    try checkOperation(operation)
+                    accountDetails = try CloudAccountDetails(profile: profile, links: links, expectedAccountID: expected)
+                    return
+                } catch CloudAuthenticationError.expired where attempt == 0 { continue }
+            }
+        } catch {
+            if operation == generation { profileError = "Не удалось обновить профиль. Проверь соединение и повтори обновление." }
+        }
+    }
+
+    private func accountData(at url: URL, token: String) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await http.data(for: request)
+        if let response = response as? HTTPURLResponse, [401, 403].contains(response.statusCode) {
+            throw CloudAuthenticationError.expired
+        }
+        try checkHTTP(response)
+        return data
+    }
+
+    func accessToken(forceRefresh: Bool = false) async throws -> String {
         guard let saved = credentials else { throw CloudAuthenticationError.expired }
-        if saved.expiresAt.timeIntervalSinceNow > 60 { return saved.accessToken }
+        if !forceRefresh, saved.expiresAt.timeIntervalSinceNow > 60 { return saved.accessToken }
         if let refreshTask { return try await refreshTask.value }
         guard let refreshToken = saved.refreshToken, !refreshToken.isEmpty else {
             credentials = nil
@@ -263,6 +305,9 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
     }
 
     func signOut() async {
+        accountDetails = nil
+        profileLoading = false
+        profileError = nil
         let saved = credentials
         generation = UUID()
         sessionID = UUID()
