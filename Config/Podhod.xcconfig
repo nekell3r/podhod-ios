@@ -1,0 +1,2 @@
+PODHOD_API_HOST = api.example.com
+#include? "Local.xcconfig"

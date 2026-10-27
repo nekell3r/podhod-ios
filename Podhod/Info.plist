@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.podhod.training.oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>podhod</string>
+			</array>
+		</dict>
+	</array>
+	<key>PodhodServerURL</key>
+	<string>https://$(PODHOD_API_HOST)</string>
+</dict>
+</plist>

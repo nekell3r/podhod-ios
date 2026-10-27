@@ -1,0 +1,38 @@
+# Локальный выпуск iOS
+
+## Сборка без публикации
+
+```sh
+python3 scripts/release_local.py 1.5 6
+```
+
+Нужны Xcode и Python 3. Скрипт запускает Swift и Python-тесты, собирает Release для `generic/platform=iOS` без подписи и упаковывает IPA, Files ZIP, иконку, manifest и SHA-256. Simulator не используется. Артефакты находятся в `.build/releases/<version>-<build>/`; исходники, изменившиеся во время проверок, останавливают выпуск.
+
+Версия и build передаются Xcode явно. Bundle ID закреплён как `dev.podhod.training`. Изменённый IPA требует новой marketing version и увеличенного build. Идентичный файл можно передать повторно; прежние файлы и версии feed сохраняются.
+
+## Настройки и отправка
+
+Скопируй `.env.local.example` в `.env.local`, заполни собственные адреса и SSH-алиас. Файл исключён из Git. Он не загружается автоматически:
+
+```sh
+set -a
+. ./.env.local
+set +a
+python3 scripts/release_local.py 1.5 6 --publish
+```
+
+Публикация требует `PODHOD_RELEASE_BASE_URL`, `PODHOD_RELEASE_SSH_HOST` и `PODHOD_RELEASE_DIRECTORY`. Передача идёт через уже настроенный SSH, без создания ключей. На сервере Python проверяет hashes, сохраняет артефакты неизменно и атомарно обновляет source.json. При ошибке staging прежний feed остаётся доступным. Это не обновляет backend, БД или Keycloak.
+
+Для уже собранного IPA достаточно упаковки:
+
+```sh
+python3 scripts/package_release.py /path/to/unsigned.ipa https://api.example.com/releases /path/to/release
+```
+
+Для отдельной promotion скопируй файлы из `files` manifest, сам `*.release.json` и `package_release.py` в уникальный staging на своём сервере, затем запусти `package_release.py publish STAGING PUBLIC_DIRECTORY`. Сборку повторять не требуется.
+
+## Установка и сохранение данных
+
+Добавь URL собственного source.json в Feather. Подпиши сборку подходящим сертификатом и установи поверх приложения. Для сохранения контейнера и Keychain нужны прежний Bundle ID, совместимая подпись и App Identifier Prefix. Не удаляй приложение перед обновлением. Локальные данные не копируются в IPA и не очищаются релизными скриптами.
+
+При изменении формата хранилища нужны резервная копия и тесты миграции. Старую сборку нельзя слепо ставить поверх более нового формата данных. Реальные пароли, токены, сертификаты и provisioning profiles не хранятся в Git.
