@@ -6,6 +6,7 @@ struct PodhodApp: App {
     @State private var auth: CloudAuthentication
     @State private var sync: CloudSynchronization
     @State private var protein: ProteinTracker
+    @State private var nutrition: NutritionPreferences
     @State private var reminders: ProteinReminders
     @State private var workspaces: AccountWorkspaces
     @State private var workspaceRevision = UUID()
@@ -15,20 +16,23 @@ struct PodhodApp: App {
         let store = WorkoutStore(fileURL: workspaces.currentDirectory.appending(path: "training.json"))
         let auth = CloudAuthentication()
         let protein = ProteinTracker(fileURL: workspaces.currentDirectory.appending(path: "protein.json"))
+        let nutrition = NutritionPreferences(fileURL: workspaces.currentDirectory.appending(path: "nutrition-preferences.json"))
         store.accountStorageError = workspaces.errorMessage
         protein.accountStorageError = workspaces.errorMessage
+        nutrition.accountStorageError = workspaces.errorMessage
         if let error = workspaces.errorMessage { store.errorMessage = error }
         _store = State(initialValue: store)
         _auth = State(initialValue: auth)
         _sync = State(initialValue: CloudSynchronization(store: store, auth: auth, protein: protein))
         _protein = State(initialValue: protein)
+        _nutrition = State(initialValue: nutrition)
         _reminders = State(initialValue: ProteinReminders())
         _workspaces = State(initialValue: workspaces)
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders)
+            RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition)
                 .id(workspaceRevision)
                 .onAppear { sync.accountDiscovered = { switchAccount(to: $0) } }
                 .onChange(of: auth.sessionID) { _, _ in
@@ -49,17 +53,19 @@ struct PodhodApp: App {
     private func switchAccount(to accountID: String?) -> Bool {
         if !workspaces.isLegacy && workspaces.accountID == accountID { return false }
         do {
-            guard !store.loadFailed, !protein.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
+            guard !store.loadFailed, !protein.loadFailed, !nutrition.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
             guard store.pauseTimingForAccountSwitch() else { throw TrainingError.invalidArchive }
             let directory = try workspaces.prepare(accountID: accountID, legacyAccountID: sync.accountID)
             let nextStore = WorkoutStore(fileURL: directory.appending(path: "training.json"))
             let nextProtein = ProteinTracker(fileURL: directory.appending(path: "protein.json"))
+            let nextNutrition = NutritionPreferences(fileURL: directory.appending(path: "nutrition-preferences.json"))
             let nextSync = CloudSynchronization(store: nextStore, auth: auth, protein: nextProtein)
-            guard !nextStore.loadFailed, !nextProtein.loadFailed, nextSync.storageReady,
+            guard !nextStore.loadFailed, !nextProtein.loadFailed, !nextNutrition.loadFailed, nextSync.storageReady,
                   nextSync.accountID == nil || nextSync.accountID == accountID else { throw TrainingError.invalidArchive }
             try workspaces.commit(accountID: accountID)
             store = nextStore
             protein = nextProtein
+            nutrition = nextNutrition
             sync = nextSync
             nextStore.resumeAccountTiming()
             workspaceRevision = UUID()
@@ -72,9 +78,9 @@ struct PodhodApp: App {
 }
 
 enum AppTab: String, CaseIterable {
-    case today = "Сегодня", program = "Программа", progress = "Прогресс"
+    case today = "Сегодня", program = "Программа", progress = "Прогресс", nutrition = "Питание"
     var icon: String {
-        switch self { case .today: "sun.max"; case .program: "calendar"; case .progress: "chart.xyaxis.line" }
+        switch self { case .today: "sun.max"; case .program: "calendar"; case .progress: "chart.xyaxis.line"; case .nutrition: "fork.knife" }
     }
 }
 
@@ -84,6 +90,7 @@ struct RootView: View {
     @Bindable var sync: CloudSynchronization
     @Bindable var protein: ProteinTracker
     @Bindable var reminders: ProteinReminders
+    @Bindable var nutrition: NutritionPreferences
     @Environment(\.scenePhase) private var scenePhase
     @State private var showAccount = false
     @State private var tab: AppTab = .today
@@ -99,6 +106,8 @@ struct RootView: View {
                     ProgramView(store: store, sync: sync, start: { showWorkout = true })
                 case .progress:
                     ProgressViewScreen(store: store)
+                case .nutrition:
+                    NutritionView(preferences: nutrition)
                 }
             }
             .background(Color.gymBackground)

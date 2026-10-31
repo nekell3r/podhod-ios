@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/nekell3r/podhod-backend",
+  "revision": "6cd6ff2838c2b3ebbf5261b94e9d798e4c31c2f1",
+  "path": "internal/service/nutrition-catalog.json",
+  "catalogVersion": "2026.10.31.2",
+  "formatVersion": 1,
+  "sha256": "d4ac0452d0e7b2dd54a052235fc8be51b5200a9b89e757a932e574073b784323"
+}

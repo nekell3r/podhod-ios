@@ -43,7 +43,7 @@ final class AccountWorkspaces {
         guard errorMessage == nil, accountID.map({ !$0.isEmpty }) ?? true else { throw TrainingError.invalidArchive }
         let target = directory(for: accountID)
         rotateGuestOnCommit = false
-        let files = ["training.json", "protein.json", "sync-state.json"]
+        let files = ["training.json", "protein.json", "sync-state.json", "nutrition-preferences.json"]
         if isLegacy {
             rotateGuestOnCommit = accountID != nil
             let backup = rootURL.appending(path: "legacy-backups/\(UUID())", directoryHint: .isDirectory)

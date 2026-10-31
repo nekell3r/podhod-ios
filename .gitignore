@@ -6,6 +6,7 @@
 secrets/
 backups/
 access.json
+nutrition-preferences.json
 realm.json
 *credentials*.json
 *.p12
