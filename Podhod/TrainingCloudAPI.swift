@@ -53,18 +53,20 @@ struct TrainingCloudAPI {
         return result.sessions
     }
 
-    func saveHistory(_ session: WorkoutSession) async throws {
-        struct Change: Encodable { var requestID = UUID(); var session: WorkoutSession }
-        let _: WorkoutSession = try await request("PUT", path: "v1/history/\(session.id.uuidString)", body: Self.encode(Change(session: session)))
+    func saveHistory(_ session: WorkoutSession, removedSetIDs: [UUID]) async throws {
+        struct Change: Encodable { var requestID = UUID(); var session: WorkoutSession; var removedSetIDs: [UUID]? }
+        let change = Change(session: session, removedSetIDs: removedSetIDs.isEmpty ? nil : removedSetIDs)
+        let _: WorkoutSession = try await request("PUT", path: "v1/history/\(session.id.uuidString)", body: Self.encode(change))
     }
 
     func active() async throws -> ActiveWorkoutRecord {
         try await request("GET", path: "v1/active")
     }
 
-    func saveActive(_ state: ActiveWorkoutState?, revision: Int64) async throws -> ActiveWorkoutRecord {
-        struct Change: Encodable { var expectedRevision: Int64; var requestID = UUID(); var state: ActiveWorkoutState? }
-        return try await request("PUT", path: "v1/active", body: Self.encode(Change(expectedRevision: revision, state: state)))
+    func saveActive(_ state: ActiveWorkoutState?, revision: Int64, removedSetIDs: [UUID] = []) async throws -> ActiveWorkoutRecord {
+        struct Change: Encodable { var expectedRevision: Int64; var requestID = UUID(); var state: ActiveWorkoutState?; var removedSetIDs: [UUID]? }
+        let change = Change(expectedRevision: revision, state: state, removedSetIDs: removedSetIDs.isEmpty ? nil : removedSetIDs)
+        return try await request("PUT", path: "v1/active", body: Self.encode(change))
     }
 
     func proteinDay(_ key: String) async throws -> ProteinDayRecord {

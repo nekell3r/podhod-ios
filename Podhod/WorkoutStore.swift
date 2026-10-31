@@ -19,15 +19,16 @@ final class WorkoutStore {
             if FileManager.default.fileExists(atPath: self.fileURL.path) {
                 let data = try Data(contentsOf: self.fileURL)
                 var loaded = try JSONDecoder().decode(TrainingArchive.self, from: data)
-                guard (1...4).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
+                guard (1...5).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
                 guard loaded.week.map(\.weekday).sorted() == Array(1...7),
                       loaded.week.allSatisfy({ $0.exercises.allSatisfy { (1...12).contains($0.setCount) } }),
                       loaded.active.map({ !$0.exercises.isEmpty && $0.exercises.indices.contains($0.currentExercise) }) ?? true
                 else { throw TrainingError.invalidArchive }
                 guard loaded.active.map({ session in session.timing?.isValid(for: session) ?? true }) ?? true,
-                      loaded.history.allSatisfy({ $0.timing?.isValid(for: $0) ?? true }) else { throw TrainingError.invalidArchive }
-                migrationSourceVersion = loaded.version < 4 ? loaded.version : nil
-                loaded.version = 4
+                      loaded.history.allSatisfy({ $0.timing?.isValid(for: $0) ?? true }),
+                      loaded.hasValidSetRemovalIntents else { throw TrainingError.invalidArchive }
+                migrationSourceVersion = loaded.version < 5 ? loaded.version : nil
+                loaded.version = 5
                 archive = loaded
             }
         } catch {
@@ -285,7 +286,17 @@ final class WorkoutStore {
               session.exercises[e].sets.count > 1 else { return false }
         var changed = archive
         let now = changed.reconcileActiveTiming(at: date)
+        var intents = changed.setRemovalIntents ?? []
+        let intent = SetRemovalIntent(sessionID: sessionID, setID: setID)
+        if !intents.contains(intent) {
+            guard intents.filter({ $0.sessionID == sessionID }).count < 600 else {
+                errorMessage = "Достигнут предел изменений подходов в этой тренировке. Сохрани выполненное перед новой тренировкой."
+                return false
+            }
+            intents.append(intent)
+        }
         changed.active?.exercises[e].sets.remove(at: s)
+        changed.setRemovalIntents = intents
         changed.reconcileActiveTiming(at: now)
         return save(changed)
     }
@@ -469,6 +480,10 @@ final class WorkoutStore {
         var changed = archive
         let now = changed.reconcileActiveTiming(at: date)
         changed.active?.timing?.transition(to: nil, at: now)
+        if let sessionID = changed.active?.id {
+            changed.setRemovalIntents?.removeAll { $0.sessionID == sessionID }
+            if changed.setRemovalIntents?.isEmpty == true { changed.setRemovalIntents = nil }
+        }
         changed.active = nil
         changed.restUntil = nil
         changed.restKind = nil
@@ -479,6 +494,24 @@ final class WorkoutStore {
     var activeWorkoutState: ActiveWorkoutState? {
         archive.active.map { ActiveWorkoutState(session: $0, restUntil: archive.restUntil,
                                                restKind: archive.restKind, restExerciseID: archive.restExerciseID) }
+    }
+
+    func removedSetIDs(for session: WorkoutSession) -> [UUID] {
+        let retained = Set(session.exercises.flatMap(\.sets).map(\.id))
+        return (archive.setRemovalIntents ?? []).filter {
+            $0.sessionID == session.id && !retained.contains($0.setID)
+        }.map(\.setID)
+    }
+
+    @discardableResult
+    func acknowledgeFinishedSetRemovals(sessionIDs: Set<UUID>) -> Bool {
+        var finished = Set(archive.history.map(\.id)).intersection(sessionIDs)
+        if let activeID = archive.active?.id { finished.remove(activeID) }
+        guard archive.setRemovalIntents?.contains(where: { finished.contains($0.sessionID) }) == true else { return true }
+        var changed = archive
+        changed.setRemovalIntents?.removeAll { finished.contains($0.sessionID) }
+        if changed.setRemovalIntents?.isEmpty == true { changed.setRemovalIntents = nil }
+        return save(changed)
     }
 
     @discardableResult
@@ -561,6 +594,12 @@ final class WorkoutStore {
             incoming?.timing = timing
         }
         changed.active = incoming
+        let retainedSessions = (incoming.map { [$0] } ?? []) + changed.history
+        changed.setRemovalIntents?.removeAll { intent in
+            guard let session = retainedSessions.first(where: { $0.id == intent.sessionID }) else { return true }
+            return session.exercises.flatMap(\.sets).contains { $0.id == intent.setID }
+        }
+        if changed.setRemovalIntents?.isEmpty == true { changed.setRemovalIntents = nil }
         changed.restUntil = state?.restUntil
         changed.restKind = state?.restKind
         changed.restExerciseID = state?.restExerciseID

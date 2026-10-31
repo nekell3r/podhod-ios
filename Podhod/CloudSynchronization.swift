@@ -127,7 +127,19 @@ final class CloudSynchronization {
                 message = "Синхронизировано"
             }
         } catch let failure as TrainingCloudFailure where failure.status == 409 {
-            message = "Состояние изменилось на сервере. Проверяем изменения…"
+            if failure.code == "upgrade_required" || failure.code == "set_removal_conflict" {
+                do {
+                    let remote = try await api.active()
+                    try saveConflictBackup(remote: remote)
+                    activeConflict(local: store.activeWorkoutState, remote: remote.state)
+                    if failure.code == "upgrade_required" { conflict?.canChooseLocal = false }
+                    message = "Записи подходов отличаются. Выбери версию после проверки конфликта."
+                } catch {
+                    message = "Локальные записи сохранены. Не удалось проверить конфликт подходов."
+                }
+            } else {
+                message = "Состояние изменилось на сервере. Проверяем изменения…"
+            }
         } catch {
             message = "Сохранено на iPhone · синхронизация недоступна"
         }
@@ -147,9 +159,19 @@ final class CloudSynchronization {
         if !remote.isEmpty { try requireSaved(store.mergeHistory(remote)) }
         var known = Set(remote.map(\.id))
         for session in store.archive.history where !known.contains(session.id) {
-            try await api.saveHistory(session)
+            do {
+                try await api.saveHistory(session, removedSetIDs: store.removedSetIDs(for: session))
+            } catch let failure as TrainingCloudFailure where failure.code == "set_removal_conflict" || failure.code == "upgrade_required" {
+                let active = try await api.active()
+                try saveConflictBackup(remote: active)
+                conflict = TrainingSyncConflict(resource: .history,
+                    message: "На сервере сохранились защищённые записи подходов, которых нет в завершённой тренировке iPhone. Обе версии сохранены для разбора; история не перезаписана.",
+                    canChooseServer: false, canChooseLocal: false)
+                return
+            }
             known.insert(session.id)
         }
+        try requireSaved(store.acknowledgeFinishedSetRemovals(sessionIDs: known))
         checkpoint.historyIDs = known.sorted { $0.uuidString < $1.uuidString }
         lastHistoryRead = Date()
         try persistCheckpoint()
@@ -239,12 +261,14 @@ final class CloudSynchronization {
                 try requireSaved(store.restoreActiveWorkout(remote.state))
                 checkpoint.active = remote
             } else if remote.revision == known.revision {
-                checkpoint.active = try await api.saveActive(local, revision: remote.revision)
+                checkpoint.active = try await api.saveActive(local, revision: remote.revision,
+                    removedSetIDs: local.map { store.removedSetIDs(for: $0.session) } ?? [])
             } else {
                 activeConflict(local: local, remote: remote.state)
             }
         } else if remote.state == nil {
-            checkpoint.active = try await api.saveActive(local, revision: remote.revision)
+            checkpoint.active = try await api.saveActive(local, revision: remote.revision,
+                removedSetIDs: local.map { store.removedSetIDs(for: $0.session) } ?? [])
         } else if local == nil {
             guard store.activeWorkoutState == nil else { return }
             try requireSaved(store.restoreActiveWorkout(remote.state))

@@ -54,7 +54,7 @@ final class SetEffortTests: XCTestCase {
         try original.write(to: url)
         let store = WorkoutStore(fileURL: url)
         let exercise = try XCTUnwrap(store.archive.active?.exercises[0])
-        XCTAssertEqual(store.archive.version, 4)
+        XCTAssertEqual(store.archive.version, 5)
         XCTAssertNil(exercise.sets[0].repsInReserve)
         XCTAssertTrue(store.setRepetitionsInReserve(exerciseID: exercise.id, setID: exercise.sets[0].id, reserve: .one))
         XCTAssertEqual(try Data(contentsOf: url.deletingLastPathComponent().appendingPathComponent("training-v3-backup.json")), original)

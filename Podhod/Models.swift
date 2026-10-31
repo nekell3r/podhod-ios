@@ -210,8 +210,13 @@ enum WorkoutRestKind: String, Codable {
     case betweenExercises
 }
 
+struct SetRemovalIntent: Codable, Equatable, Hashable {
+    var sessionID: UUID
+    var setID: UUID
+}
+
 struct TrainingArchive: Codable, Equatable {
-    var version = 4
+    var version = 5
     var week = TrainingDay.initialWeek()
     var history: [WorkoutSession] = []
     var active: WorkoutSession?
@@ -221,6 +226,18 @@ struct TrainingArchive: Codable, Equatable {
     var scheduledWeeks: [TrainingWeek]?
     var editedWeekStarts: [String]?
     var timezone: String?
+    var setRemovalIntents: [SetRemovalIntent]?
+
+    var hasValidSetRemovalIntents: Bool {
+        let intents = setRemovalIntents ?? []
+        guard Set(intents).count == intents.count,
+              Dictionary(grouping: intents, by: \.sessionID).values.allSatisfy({ $0.count <= 600 }) else { return false }
+        let sessions = (active.map { [$0] } ?? []) + history
+        return intents.allSatisfy { intent in
+            guard let session = sessions.first(where: { $0.id == intent.sessionID }) else { return false }
+            return !session.exercises.flatMap(\.sets).contains { $0.id == intent.setID }
+        }
+    }
 }
 
 enum TrainingError: LocalizedError {
