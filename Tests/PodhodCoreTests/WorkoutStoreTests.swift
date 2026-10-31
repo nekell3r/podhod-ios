@@ -186,7 +186,7 @@ final class WorkoutStoreTests: XCTestCase {
         let url = location()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var archive = TrainingArchive()
-        archive.version = 4
+        archive.version = 5
         let original = try JSONEncoder().encode(archive)
         try original.write(to: url)
         let store = WorkoutStore(fileURL: url)
@@ -248,7 +248,7 @@ final class WorkoutStoreTests: XCTestCase {
 
         let store = WorkoutStore(fileURL: url)
         XCTAssertFalse(store.loadFailed)
-        XCTAssertEqual(store.archive.version, 3)
+        XCTAssertEqual(store.archive.version, 4)
         XCTAssertEqual(store.archive.week[0].exercises[0].restAfterExerciseSeconds, 90)
         XCTAssertEqual(store.archive.active?.id, session.id)
         XCTAssertEqual(store.archive.active?.exercises[0].restAfterExerciseSeconds, 90)
@@ -259,7 +259,7 @@ final class WorkoutStoreTests: XCTestCase {
         XCTAssertEqual(store.archive.restUntil, archive.restUntil)
         store.stopRest()
         let saved = try JSONDecoder().decode(TrainingArchive.self, from: Data(contentsOf: url))
-        XCTAssertEqual(saved.version, 3)
+        XCTAssertEqual(saved.version, 4)
         XCTAssertEqual(saved.history[0].volume, 500)
     }
 

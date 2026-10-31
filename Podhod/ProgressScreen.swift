@@ -5,6 +5,7 @@ struct ProgressViewScreen: View {
     var store: WorkoutStore
     @State private var selectedExerciseID: UUID?
     @State private var selectedSession: WorkoutSession?
+    @State private var historyExercise: Exercise?
     private var exercises: [Exercise] {
         var seen: Set<UUID> = []
         return store.archive.history.flatMap(\.exercises).filter { $0.sets.contains(where: \.isCompleted) }
@@ -73,6 +74,12 @@ struct ProgressViewScreen: View {
                             .frame(height: 180)
                             Text(points.count < 2 ? "Первая точка есть. После следующей тренировки сможешь сравнить результат." : "Максимальный вес выполненного подхода за тренировку. Сравнивай при схожем числе повторов.")
                                 .font(.caption2).foregroundStyle(Color.gymMuted).lineSpacing(3)
+                            Button {
+                                historyExercise = exercise
+                            } label: {
+                                Label("Подходы и заметки по датам", systemImage: "clock.arrow.circlepath")
+                                    .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
+                            }.buttonStyle(.plain).foregroundStyle(Color.gymLime)
                         }.modifier(GymCard())
                     }
                     VStack(spacing: 14) {
@@ -99,6 +106,7 @@ struct ProgressViewScreen: View {
             }.padding(.horizontal, 22).padding(.bottom, 25)
         }
         .sheet(item: $selectedSession) { session in HistoryDetail(session: session) }
+        .sheet(item: $historyExercise) { exercise in ExerciseHistoryView(store: store, exercise: exercise) }
     }
 
     private var timeOverview: some View {
@@ -148,7 +156,12 @@ struct HistoryDetail: View {
                                 Text("Подход \(index + 1)").foregroundStyle(.secondary)
                                 Spacer()
                                 if set.isCompleted {
-                                    Text("\(weightText(set.weightValue ?? 0)) кг × \(set.repValue ?? 0)")
+                                    VStack(alignment: .trailing, spacing: 4) {
+                                        Text("\(weightText(set.weightValue ?? 0)) кг × \(set.repValue ?? 0)")
+                                        if let reserve = set.repsInReserve, reserve != .notRecorded {
+                                            Text(reserve.summary).font(.caption).foregroundStyle(Color.gymMuted)
+                                        }
+                                    }
                                     Image(systemName: "checkmark").foregroundStyle(Color.gymLime)
                                 } else { Text(item.isSkipped ? "Пропущен" : "Не выполнен").foregroundStyle(.secondary) }
                             }.font(.subheadline)
@@ -165,5 +178,90 @@ struct HistoryDetail: View {
         #if os(macOS)
         .frame(minWidth: 430, minHeight: 650)
         #endif
+    }
+}
+
+struct ExerciseHistoryView: View {
+    var store: WorkoutStore
+    var exercise: Exercise
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let history = store.exerciseHistory(for: exercise)
+        let points = store.progress(for: exercise)
+        NavigationStack {
+            List {
+                Section {
+                    Text(exercise.name).font(.title2.bold())
+                    Text("Выполненные подходы по датам. Заметки сохранены такими, какими были во время тренировки.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                if history.isEmpty {
+                    ContentUnavailableView("Пока нет записей", systemImage: "clock.arrow.circlepath",
+                        description: Text("Запиши подход и заверши тренировку — результат появится здесь."))
+                } else {
+                    Section("Максимальный рабочий вес · кг") {
+                        Chart {
+                            ForEach(points, id: \.session.id) { point in
+                                LineMark(x: .value("Дата", point.session.startedAt), y: .value("Вес, кг", point.weight))
+                                    .foregroundStyle(Color.gymLime)
+                                PointMark(x: .value("Дата", point.session.startedAt), y: .value("Вес, кг", point.weight))
+                                    .foregroundStyle(Color.gymLime)
+                                    .accessibilityLabel(point.session.startedAt.formatted(.dateTime.day().month().year()))
+                                    .accessibilityValue("\(weightText(point.weight)) кг")
+                            }
+                        }
+                        .chartYScale(domain: 0...max(10, (points.map(\.weight).max() ?? 0) * 1.2))
+                        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisValueLabel(format: .dateTime.day().month(.abbreviated)) } }
+                        .frame(height: 180).padding(.vertical, 8)
+                        Text("Сравнивай вес при схожем числе повторов и запасе. Для собственного веса здесь будет 0 кг.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(history, id: \.session.id) { entry in
+                        Section(entry.session.startedAt.formatted(.dateTime.day().month(.wide).year().locale(Locale(identifier: "ru_RU")))) {
+                            Text(entry.session.title).font(.subheadline.weight(.semibold))
+                            ForEach(entry.exercises) { item in
+                                ForEach(Array(item.sets.enumerated()).filter { $0.element.isCompleted }, id: \.element.id) { index, set in
+                                    completedSetRow(set, number: index + 1)
+                                }
+                                if !item.exercise.cue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("Заметка к упражнению").font(.caption).foregroundStyle(.secondary)
+                                        Text(item.exercise.cue).font(.subheadline)
+                                    }.padding(.vertical, 4)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("История упражнения")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }
+        }.tint(.gymLime).preferredColorScheme(.dark)
+        #if os(macOS)
+        .frame(minWidth: 430, minHeight: 650)
+        #endif
+    }
+
+    private func completedSetRow(_ set: LoggedSet, number: Int) -> some View {
+        let result = "\(weightText(set.weightValue ?? 0)) кг × \(set.repValue ?? 0)"
+        return VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("Подход \(number)").foregroundStyle(.secondary)
+                    Spacer()
+                    Text(result).fontWeight(.semibold)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Подход \(number)").foregroundStyle(.secondary)
+                    Text(result).fontWeight(.semibold)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text((set.repsInReserve ?? .notRecorded).summary)
+                .font(.caption).foregroundStyle(.secondary)
+        }.font(.subheadline).padding(.vertical, 4)
     }
 }

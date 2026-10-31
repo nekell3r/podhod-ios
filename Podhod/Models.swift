@@ -75,11 +75,36 @@ struct TrainingDay: Codable, Identifiable, Equatable {
     }
 }
 
+enum RepetitionsInReserve: Int, Codable, CaseIterable, Identifiable {
+    case notRecorded = -1
+    case failure = 0
+    case one, two, three, four, fiveOrMore
+
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .notRecorded: "Не указан"
+        case .failure: "0 — в отказ"
+        case .fiveOrMore: "5+ повторов"
+        default: "\(rawValue)"
+        }
+    }
+    var summary: String {
+        switch self {
+        case .notRecorded: "Запас не указан"
+        case .failure: "В отказ · запас 0"
+        case .fiveOrMore: "Запас 5+ повторов"
+        default: "Запас \(rawValue)"
+        }
+    }
+}
+
 struct LoggedSet: Codable, Identifiable, Equatable {
     var id = UUID()
     var reps = ""
     var weight = ""
     var isCompleted = false
+    var repsInReserve: RepetitionsInReserve?
 
     var repValue: Int? {
         Int(reps.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -179,7 +204,7 @@ enum WorkoutRestKind: String, Codable {
 }
 
 struct TrainingArchive: Codable, Equatable {
-    var version = 3
+    var version = 4
     var week = TrainingDay.initialWeek()
     var history: [WorkoutSession] = []
     var active: WorkoutSession?

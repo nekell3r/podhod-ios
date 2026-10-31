@@ -150,7 +150,7 @@ final class WorkoutTimingTests: XCTestCase {
         try original.write(to: url)
         let store = WorkoutStore(fileURL: url)
         XCTAssertFalse(store.loadFailed)
-        XCTAssertEqual(store.archive.version, 3)
+        XCTAssertEqual(store.archive.version, 4)
         XCTAssertNil(store.archive.active?.timing)
         XCTAssertNil(store.archive.history[0].timingTotals())
         store.selectExercise(1, date: date(1100))

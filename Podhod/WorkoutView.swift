@@ -8,6 +8,7 @@ struct WorkoutView: View {
     @State private var stoppingSession: WorkoutSession?
     @State private var summary: WorkoutSession?
     @State private var detailExercise: Exercise?
+    @State private var historyExercise: Exercise?
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -109,6 +110,7 @@ struct WorkoutView: View {
         .tint(.gymLime).preferredColorScheme(.dark)
         .interactiveDismissDisabled(summary == nil)
         .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise) }
+        .sheet(item: $historyExercise) { exercise in ExerciseHistoryView(store: store, exercise: exercise) }
     }
 
     private func training(_ session: WorkoutSession) -> some View {
@@ -219,11 +221,27 @@ struct WorkoutView: View {
                     }
                     Text("Собственный вес: укажи 0 кг. Отметь галочкой каждый выполненный подход.")
                         .font(.caption2).foregroundStyle(Color.gymMuted).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Запас — сколько повторов ещё получилось бы с той же техникой. 0 — в отказ, 5+ — пять или больше. Указывать необязательно; оценку можно изменить до завершения тренировки.")
+                        .font(.caption).foregroundStyle(Color.gymMuted).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if let previous = store.previousExercise(exercise.exercise) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("В прошлый раз", systemImage: "clock.arrow.circlepath").font(.caption.bold()).foregroundStyle(Color.gymLime)
-                        Text(previous.sets.filter(\.isCompleted).map { "\(weightText($0.weightValue ?? 0)) кг × \($0.repValue ?? 0)" }.joined(separator: "  ·  "))
+                        Button {
+                            inputFocused = false
+                            historyExercise = exercise.exercise
+                        } label: {
+                            HStack {
+                                Label("В прошлый раз", systemImage: "clock.arrow.circlepath")
+                                Spacer()
+                                Text("Вся история")
+                                Image(systemName: "chevron.right")
+                            }.font(.subheadline.weight(.semibold)).frame(minHeight: 44)
+                        }.buttonStyle(.plain).foregroundStyle(Color.gymLime)
+                            .accessibilityLabel("История и прогресс: \(exercise.exercise.name)")
+                        Text(previous.sets.filter(\.isCompleted).map {
+                            let result = "\(weightText($0.weightValue ?? 0)) кг × \($0.repValue ?? 0)"
+                            return $0.repsInReserve.map { result + " · " + $0.summary } ?? result
+                        }.joined(separator: "\n"))
                             .font(.caption).foregroundStyle(Color.gymMuted)
                     }.modifier(GymCard())
                 }
@@ -260,34 +278,62 @@ struct WorkoutView: View {
     }
 
     private func setRow(_ set: LoggedSet, index: Int, exercise: SessionExercise) -> some View {
-        HStack(spacing: 10) {
-            Text(String(format: "%02d", index + 1)).font(.system(.headline, design: .monospaced))
-                .foregroundStyle(set.isCompleted ? Color.gymLime : .white).frame(width: 42, alignment: .leading)
-            TextField("0", text: Binding(get: { set.weight }, set: { store.updateSet(exerciseID: exercise.id, setID: set.id, weight: $0) }))
-                .multilineTextAlignment(.center).textFieldStyle(.plain)
-                #if os(iOS)
-                .keyboardType(.decimalPad)
-                #endif
-                .focused($inputFocused).disabled(set.isCompleted || exercise.isSkipped)
-                .padding(.vertical, 13).frame(maxWidth: .infinity).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityLabel("Вес в килограммах, подход \(index + 1)")
-            TextField("—", text: Binding(get: { set.reps }, set: { store.updateSet(exerciseID: exercise.id, setID: set.id, reps: $0) }))
-                .multilineTextAlignment(.center).textFieldStyle(.plain)
-                #if os(iOS)
-                .keyboardType(.numberPad)
-                #endif
-                .focused($inputFocused).disabled(set.isCompleted || exercise.isSkipped)
-                .padding(.vertical, 13).frame(maxWidth: .infinity).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityLabel("Повторы, подход \(index + 1)")
-            Button {
-                inputFocused = false
-                store.toggleSet(exerciseID: exercise.id, setID: set.id)
+        VStack(spacing: 4) {
+            HStack(spacing: 10) {
+                Text(String(format: "%02d", index + 1)).font(.system(.headline, design: .monospaced))
+                    .foregroundStyle(set.isCompleted ? Color.gymLime : .white).frame(width: 42, alignment: .leading)
+                TextField("0", text: Binding(get: { set.weight }, set: { store.updateSet(exerciseID: exercise.id, setID: set.id, weight: $0) }))
+                    .multilineTextAlignment(.center).textFieldStyle(.plain)
+                    #if os(iOS)
+                    .keyboardType(.decimalPad)
+                    #endif
+                    .focused($inputFocused).disabled(set.isCompleted || exercise.isSkipped)
+                    .padding(.vertical, 13).frame(maxWidth: .infinity).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Вес в килограммах, подход \(index + 1)")
+                TextField("—", text: Binding(get: { set.reps }, set: { store.updateSet(exerciseID: exercise.id, setID: set.id, reps: $0) }))
+                    .multilineTextAlignment(.center).textFieldStyle(.plain)
+                    #if os(iOS)
+                    .keyboardType(.numberPad)
+                    #endif
+                    .focused($inputFocused).disabled(set.isCompleted || exercise.isSkipped)
+                    .padding(.vertical, 13).frame(maxWidth: .infinity).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Повторы, подход \(index + 1)")
+                Button {
+                    inputFocused = false
+                    store.toggleSet(exerciseID: exercise.id, setID: set.id)
+                } label: {
+                    Image(systemName: set.isCompleted ? "checkmark.circle.fill" : exercise.isSkipped ? "forward.end.circle" : "circle")
+                        .font(.system(size: 29)).foregroundStyle(set.isCompleted ? Color.gymLime : .gymMuted)
+                        .frame(width: 44, height: 48).contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(exercise.isSkipped)
+                    .accessibilityLabel(set.isCompleted ? "Изменить подход \(index + 1)" : exercise.isSkipped ? "Подход \(index + 1) пропущен" : "Записать подход \(index + 1)")
+            }
+            Menu {
+                Picker("Запас повторений", selection: Binding(
+                    get: { set.repsInReserve ?? .notRecorded },
+                    set: { store.setRepetitionsInReserve(exerciseID: exercise.id, setID: set.id, reserve: $0) }
+                )) {
+                    ForEach(RepetitionsInReserve.allCases) { reserve in
+                        Text(reserve.title).tag(reserve)
+                    }
+                }
             } label: {
-                Image(systemName: set.isCompleted ? "checkmark.circle.fill" : exercise.isSkipped ? "forward.end.circle" : "circle")
-                    .font(.system(size: 29)).foregroundStyle(set.isCompleted ? Color.gymLime : .gymMuted)
-                    .frame(width: 44, height: 48).contentShape(Rectangle())
-            }.buttonStyle(.plain).disabled(exercise.isSkipped)
-                .accessibilityLabel(set.isCompleted ? "Изменить подход \(index + 1)" : exercise.isSkipped ? "Подход \(index + 1) пропущен" : "Записать подход \(index + 1)")
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Text("Запас повторений")
+                        Spacer(minLength: 8)
+                        Text((set.repsInReserve ?? .notRecorded).title)
+                        Image(systemName: "chevron.up.chevron.down")
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Запас повторений")
+                        Label((set.repsInReserve ?? .notRecorded).title, systemImage: "chevron.up.chevron.down")
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.font(.subheadline).frame(minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(set.repsInReserve == nil || set.repsInReserve == .notRecorded ? Color.gymMuted : .gymLime)
+                .disabled(exercise.isSkipped)
+                .accessibilityLabel("Запас повторений, подход \(index + 1)")
+                .accessibilityValue((set.repsInReserve ?? .notRecorded).title)
         }.padding(10).background(set.isCompleted ? Color.gymLime.opacity(0.055) : .gymCard, in: RoundedRectangle(cornerRadius: 18))
     }
 

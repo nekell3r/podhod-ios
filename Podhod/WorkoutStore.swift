@@ -19,15 +19,15 @@ final class WorkoutStore {
             if FileManager.default.fileExists(atPath: self.fileURL.path) {
                 let data = try Data(contentsOf: self.fileURL)
                 var loaded = try JSONDecoder().decode(TrainingArchive.self, from: data)
-                guard (1...3).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
+                guard (1...4).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
                 guard loaded.week.map(\.weekday).sorted() == Array(1...7),
                       loaded.week.allSatisfy({ $0.exercises.allSatisfy { (1...12).contains($0.setCount) } }),
                       loaded.active.map({ !$0.exercises.isEmpty && $0.exercises.indices.contains($0.currentExercise) }) ?? true
                 else { throw TrainingError.invalidArchive }
                 guard loaded.active.map({ session in session.timing?.isValid(for: session) ?? true }) ?? true,
                       loaded.history.allSatisfy({ $0.timing?.isValid(for: $0) ?? true }) else { throw TrainingError.invalidArchive }
-                migrationSourceVersion = loaded.version < 3 ? loaded.version : nil
-                loaded.version = 3
+                migrationSourceVersion = loaded.version < 4 ? loaded.version : nil
+                loaded.version = 4
                 archive = loaded
             }
         } catch {
@@ -260,6 +260,17 @@ final class WorkoutStore {
     }
 
     @discardableResult
+    func setRepetitionsInReserve(exerciseID: UUID, setID: UUID, reserve: RepetitionsInReserve) -> Bool {
+        guard let session = archive.active,
+              let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),
+              let s = session.exercises[e].sets.firstIndex(where: { $0.id == setID }),
+              !session.exercises[e].isSkipped else { return false }
+        var changed = archive
+        changed.active?.exercises[e].sets[s].repsInReserve = reserve
+        return save(changed)
+    }
+
+    @discardableResult
     func toggleSet(exerciseID: UUID, setID: UUID, date: Date = Date()) -> Bool {
         guard var session = archive.active,
               let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),
@@ -479,15 +490,26 @@ final class WorkoutStore {
     }
 
     func previousExercise(_ exercise: Exercise) -> SessionExercise? {
-        archive.history.lazy.flatMap(\.exercises)
-            .first { $0.exercise.id == exercise.id && $0.sets.contains(where: \.isCompleted) }
+        exerciseHistory(for: exercise).first?.exercises.first
+    }
+
+    func exerciseHistory(for exercise: Exercise) -> [(session: WorkoutSession, exercises: [SessionExercise])] {
+        let catalog = ExerciseCatalog.bundled
+        let exerciseID = catalog.entry(for: exercise.id)?.id ?? exercise.id
+        return archive.history.sorted { $0.startedAt > $1.startedAt }.compactMap { session in
+            let matches = session.exercises.filter {
+                (catalog.entry(for: $0.exercise.id)?.id ?? $0.exercise.id) == exerciseID &&
+                    $0.sets.contains(where: \.isCompleted)
+            }
+            return matches.isEmpty ? nil : (session, matches)
+        }
     }
 
     func progress(for exercise: Exercise) -> [(session: WorkoutSession, weight: Double)] {
-        archive.history.reversed().compactMap { session in
-            let sets = session.exercises.filter { $0.exercise.id == exercise.id }.flatMap(\.sets).filter(\.isCompleted)
+        exerciseHistory(for: exercise).reversed().compactMap { entry in
+            let sets = entry.exercises.flatMap(\.sets).filter(\.isCompleted)
             guard let maxWeight = sets.compactMap(\.weightValue).max() else { return nil }
-            return (session, maxWeight)
+            return (entry.session, maxWeight)
         }
     }
 }
