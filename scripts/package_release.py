@@ -230,9 +230,8 @@ def package_release(ipa, base_url, output_directory):
         return output / manifest_name
 
 
-def promote_release(staging_directory, published_directory):
+def validate_staged_release(staging_directory):
     stage = Path(staging_directory)
-    published = Path(published_directory)
     manifests = list(stage.glob("Podhod-*.release.json"))
     if len(manifests) != 1:
         raise ValueError("Staging must contain exactly one Podhod release manifest")
@@ -271,6 +270,14 @@ def promote_release(staging_directory, published_directory):
     if (record["version"] != manifest["version"] or record["size"] != files[manifest["ipa"]]["size"]
             or record["minOSVersion"] != info["MinimumOSVersion"]):
         raise ValueError("Staged feed metadata differs from the verified IPA")
+    return manifest_path, manifest
+
+
+def promote_release(staging_directory, published_directory):
+    stage = Path(staging_directory)
+    published = Path(published_directory)
+    manifest_path, manifest = validate_staged_release(stage)
+    files = manifest["files"]
     published.mkdir(parents=True, exist_ok=True)
     with (published.parent / ".podhod-release.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

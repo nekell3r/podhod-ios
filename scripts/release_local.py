@@ -41,6 +41,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version", help="New marketing version, for example 1.2")
     parser.add_argument("build", help="Increasing positive integer build number, for example 3")
+    parser.add_argument("--output", type=Path, help="Release artifact directory")
     parser.add_argument("--publish", action="store_true", help="Publish using explicit PODHOD_RELEASE_* environment settings")
     args = parser.parse_args()
     if args.publish:
@@ -54,11 +55,11 @@ def main():
         parser.error("build must be a positive integer")
     release_id = f"{args.version}-{args.build}"
     scratch = WORKSPACE / ".build" / "local-release" / release_id
-    output = WORKSPACE / ".build" / "releases" / release_id
+    output = args.output.resolve() if args.output else WORKSPACE / ".build" / "releases" / release_id
     scratch.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment.update({
-        "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+        "DEVELOPER_DIR": os.environ.get("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer"),
         "CLANG_MODULE_CACHE_PATH": str(scratch / "swift-module-cache"),
     })
     before = source_fingerprint()

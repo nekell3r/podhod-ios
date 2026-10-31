@@ -1,0 +1,119 @@
+name: Publish iPhone release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: podhod-ios-main-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'nekell3r/podhod-ios' && github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      PODHOD_RELEASE_HOST: ${{ vars.PODHOD_RELEASE_HOST }}
+      PODHOD_RELEASE_BASE_URL: ${{ vars.PODHOD_RELEASE_BASE_URL }}
+      PODHOD_API_HOST: ${{ vars.PODHOD_API_HOST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure restricted release SSH
+        env:
+          RELEASE_KEY: ${{ secrets.PODHOD_RELEASE_SSH_KEY }}
+          RELEASE_KNOWN_HOSTS: ${{ secrets.PODHOD_RELEASE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$PODHOD_RELEASE_HOST"
+          [[ "$PODHOD_RELEASE_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          test -n "$RELEASE_KEY"
+          test -n "$RELEASE_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/podhod-ssh"
+          printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/podhod-ssh/key"
+          printf '%s\n' "$RELEASE_KNOWN_HOSTS" > "$RUNNER_TEMP/podhod-ssh/known_hosts"
+      - name: Check previous publication
+        id: publication
+        run: |
+          set -euo pipefail
+          ssh -T -i "$RUNNER_TEMP/podhod-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/podhod-ssh/known_hosts" \
+            -o ConnectTimeout=15 "root@$PODHOD_RELEASE_HOST" status > "$RUNNER_TEMP/podhod-status.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          state = json.loads((Path(os.environ['RUNNER_TEMP']) / 'podhod-status.json').read_text())
+          same = state['commit'] == os.environ['GITHUB_SHA']
+          if not same and int(state['run_number']) >= int(os.environ['GITHUB_RUN_NUMBER']):
+              raise SystemExit('A newer workflow run is already published')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('skip=' + str(same).lower() + '\n')
+          PY
+      - name: Configure unsigned iPhone build
+        if: steps.publication.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          python3 - <<'PYTHON'
+          import os, re
+          from pathlib import Path
+          hostname = os.environ['PODHOD_API_HOST']
+          if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.-]*', hostname):
+              raise SystemExit('Expected the configured API hostname')
+          Path('Config/Local.xcconfig').write_text('PODHOD_API_HOST = ' + hostname + '\n')
+          PYTHON
+      - name: Select CI version and build
+        if: steps.publication.outputs.skip != 'true'
+        id: identity
+        run: |
+          set -euo pipefail
+          python3 scripts/publish_ci.py identity --repository . --commit "$GITHUB_SHA" \
+            --run-number "$GITHUB_RUN_NUMBER" > "$RUNNER_TEMP/podhod-identity.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ['RUNNER_TEMP']) / 'podhod-identity.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('version=' + value['version'] + '\nbuild=' + value['build'] + '\n')
+          PY
+      - name: Test and build unsigned iPhone release
+        if: steps.publication.outputs.skip != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+          RELEASE_BUILD: ${{ steps.identity.outputs.build }}
+        run: python3 scripts/release_local.py "$RELEASE_VERSION" "$RELEASE_BUILD" --output "$RUNNER_TEMP/podhod-release"
+      - name: Publish verified IPA through restricted receiver
+        if: steps.publication.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/publish_ci.py bundle --repository . --commit "$GITHUB_SHA" \
+            --run-number "$GITHUB_RUN_NUMBER" --artifacts "$RUNNER_TEMP/podhod-release" \
+            --output "$RUNNER_TEMP/podhod-release.tar.gz"
+          ssh -T -i "$RUNNER_TEMP/podhod-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/podhod-ssh/known_hosts" \
+            -o ConnectTimeout=15 "root@$PODHOD_RELEASE_HOST" < "$RUNNER_TEMP/podhod-release.tar.gz"
+      - name: Verify publication receipt
+        run: |
+          set -euo pipefail
+          ssh -T -i "$RUNNER_TEMP/podhod-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/podhod-ssh/known_hosts" \
+            -o ConnectTimeout=15 "root@$PODHOD_RELEASE_HOST" status > "$RUNNER_TEMP/podhod-status.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads((Path(os.environ['RUNNER_TEMP']) / 'podhod-status.json').read_text())
+          if value['commit'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('The server did not confirm this commit publication')
+          print('Published Podhod ' + value['version'] + ' (' + value['build'] + ') to the existing Feather source')
+          PY
+      - name: Remove ephemeral SSH files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/podhod-ssh"
