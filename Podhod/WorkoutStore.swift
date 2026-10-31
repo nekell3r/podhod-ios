@@ -261,6 +261,82 @@ final class WorkoutStore {
     }
 
     @discardableResult
+    func addActiveExercise(sessionID: UUID, plan: PlannedExercise, date: Date = Date()) -> Bool {
+        guard let session = archive.active, session.id == sessionID else {
+            errorMessage = TrainingError.staleWorkoutEdit.localizedDescription
+            return false
+        }
+        guard session.exercises.count < 50 else {
+            errorMessage = "В тренировке может быть не больше 50 упражнений, включая пропущенные."
+            return false
+        }
+        guard !plan.exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (1...12).contains(plan.setCount), !plan.targetReps.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (0...600).contains(plan.restSeconds), (0...600).contains(plan.restAfterExerciseSeconds) else {
+            errorMessage = TrainingError.invalidProgram.localizedDescription
+            return false
+        }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        changed.active?.exercises.append(SessionExercise(exercise: plan.exercise, targetReps: plan.targetReps,
+            restSeconds: plan.restSeconds, restAfterExerciseSeconds: plan.restAfterExerciseSeconds,
+            sets: (0..<plan.setCount).map { _ in LoggedSet() }))
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
+    func replaceActiveExercise(sessionID: UUID, original: SessionExercise, with exercise: Exercise, date: Date = Date()) -> Bool {
+        guard let session = archive.active, session.id == sessionID,
+              let index = session.exercises.firstIndex(where: { $0.id == original.id }),
+              session.exercises[index] == original, !original.isResolved else {
+            errorMessage = TrainingError.staleWorkoutEdit.localizedDescription
+            return false
+        }
+        guard session.exercises.count < 50 else {
+            errorMessage = "Для замены нужна новая карточка. В тренировке уже 50 упражнений."
+            return false
+        }
+        let catalog = ExerciseCatalog.bundled
+        guard (catalog.entry(for: original.exercise.id)?.id ?? original.exercise.id) !=
+                (catalog.entry(for: exercise.id)?.id ?? exercise.id),
+              !exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let remaining = original.sets.filter { !$0.isCompleted }.count
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        if let deadline = changed.restUntil, deadline > now, changed.restExerciseID == nil {
+            changed.restExerciseID = session.exercises[session.currentExercise].id
+        }
+        changed.active?.exercises[index].isSkipped = true
+        let replacement = SessionExercise(exercise: exercise, targetReps: original.targetReps,
+            restSeconds: original.restSeconds, restAfterExerciseSeconds: original.restAfterExerciseSeconds,
+            sets: (0..<remaining).map { _ in LoggedSet() })
+        changed.active?.exercises.insert(replacement, at: index + 1)
+        changed.active?.currentExercise = index + 1
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
+    func reorderActiveExercises(sessionID: UUID, expectedIDs: [UUID], orderedIDs: [UUID], date: Date = Date()) -> Bool {
+        guard let session = archive.active, session.id == sessionID,
+              session.exercises.map(\.id) == expectedIDs else {
+            errorMessage = TrainingError.staleWorkoutEdit.localizedDescription
+            return false
+        }
+        guard orderedIDs.count == expectedIDs.count, Set(orderedIDs) == Set(expectedIDs),
+              Set(orderedIDs).count == orderedIDs.count else { return false }
+        if orderedIDs == expectedIDs { return true }
+        let selectedID = session.exercises[session.currentExercise].id
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        changed.active?.exercises = orderedIDs.compactMap { id in session.exercises.first { $0.id == id } }
+        changed.active?.currentExercise = orderedIDs.firstIndex(of: selectedID) ?? 0
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
     func addActiveSet(sessionID: UUID, exerciseID: UUID, date: Date = Date()) -> Bool {
         guard let session = archive.active, session.id == sessionID,
               let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),

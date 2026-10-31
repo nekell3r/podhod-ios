@@ -242,7 +242,7 @@ struct TrainingArchive: Codable, Equatable {
 
 enum TrainingError: LocalizedError {
     case invalidSet, emptyDay, unfinishedSets, noCompletedSets, invalidProgram, unsupportedArchive, invalidArchive
-    case invalidRest, scheduleConflict, invalidTrainingDate, staleProgramEdit
+    case invalidRest, scheduleConflict, invalidTrainingDate, staleProgramEdit, staleWorkoutEdit
 
     var errorDescription: String? {
         switch self {
@@ -253,6 +253,7 @@ enum TrainingError: LocalizedError {
         case .invalidProgram: "Проверь название, количество подходов и время отдыха."
         case .invalidRest: "Время отдыха должно быть от 0 до 600 секунд."
         case .staleProgramEdit: "Программа изменилась, пока был открыт редактор. Твой черновик остался на этом экране. Закрой редактор и открой актуальный день перед повторным изменением."
+        case .staleWorkoutEdit: "Тренировка или подходы изменились, пока был открыт выбор. Закрой его и открой актуальное упражнение перед повторным изменением."
         case .scheduleConflict: "На этой дате уже есть тренировка. Сначала выбери для неё другой день."
         case .invalidTrainingDate: "Выбери дату в пределах этой недели."
         case .unsupportedArchive: "Этот файл создан более новой версией приложения. Обнови приложение, чтобы открыть данные."

@@ -119,6 +119,23 @@ struct ExerciseCatalog: Decodable, Equatable {
         }
     }
 
+    func replacements(for exercise: Exercise, query: String = "", equipmentID: String? = nil) -> [ExerciseCatalogEntry] {
+        guard let original = entry(for: exercise.id) else { return [] }
+        let primary = Set(original.primaryMuscles)
+        let equipment = Set(original.equipment)
+        return search(query: query, equipmentID: equipmentID).filter {
+            $0.id != original.id && !primary.isDisjoint(with: $0.primaryMuscles)
+        }.sorted { left, right in
+            let leftMuscles = primary.intersection(left.primaryMuscles).count
+            let rightMuscles = primary.intersection(right.primaryMuscles).count
+            if leftMuscles != rightMuscles { return leftMuscles > rightMuscles }
+            let leftEquipment = equipment.intersection(left.equipment).count
+            let rightEquipment = equipment.intersection(right.equipment).count
+            if leftEquipment != rightEquipment { return leftEquipment > rightEquipment }
+            return left.exercise.name.localizedStandardCompare(right.exercise.name) == .orderedAscending
+        }
+    }
+
     private func validate() throws {
         func invalid(_ message: String) -> DecodingError {
             .dataCorrupted(.init(codingPath: [], debugDescription: "Invalid exercise catalog: \(message)"))
