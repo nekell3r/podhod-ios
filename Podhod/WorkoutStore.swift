@@ -260,6 +260,56 @@ final class WorkoutStore {
     }
 
     @discardableResult
+    func addActiveSet(sessionID: UUID, exerciseID: UUID, date: Date = Date()) -> Bool {
+        guard let session = archive.active, session.id == sessionID,
+              let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),
+              !session.exercises[e].isSkipped else { return false }
+        guard session.exercises[e].sets.count < 12 else {
+            errorMessage = "В одном упражнении может быть не больше 12 подходов."
+            return false
+        }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        changed.active?.exercises[e].sets.append(LoggedSet())
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
+    func removeActiveSet(sessionID: UUID, exerciseID: UUID, setID: UUID, date: Date = Date()) -> Bool {
+        guard let session = archive.active, session.id == sessionID,
+              let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),
+              let s = session.exercises[e].sets.firstIndex(where: { $0.id == setID }),
+              !session.exercises[e].isSkipped,
+              !session.exercises[e].sets[s].isCompleted,
+              session.exercises[e].sets.count > 1 else { return false }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        changed.active?.exercises[e].sets.remove(at: s)
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
+    func reusePreviousSet(sessionID: UUID, exerciseID: UUID, setID: UUID, date: Date = Date()) -> Bool {
+        guard let session = archive.active, session.id == sessionID,
+              let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),
+              let s = session.exercises[e].sets.firstIndex(where: { $0.id == setID }),
+              !session.exercises[e].isSkipped,
+              !session.exercises[e].sets[s].isCompleted,
+              let previous = previousSet(for: session.exercises[e].exercise, index: s) else { return false }
+        let current = session.exercises[e].sets[s]
+        let emptyWeight = current.weight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let emptyReps = current.reps.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard emptyWeight || emptyReps else { return false }
+        var changed = archive
+        changed.reconcileActiveTiming(at: date)
+        if emptyWeight { changed.active?.exercises[e].sets[s].weight = previous.weight }
+        if emptyReps { changed.active?.exercises[e].sets[s].reps = previous.reps }
+        return save(changed)
+    }
+
+    @discardableResult
     func setRepetitionsInReserve(exerciseID: UUID, setID: UUID, reserve: RepetitionsInReserve) -> Bool {
         guard let session = archive.active,
               let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),
@@ -351,14 +401,43 @@ final class WorkoutStore {
         return save(changed)
     }
 
-    func stopRest(date: Date = Date()) {
+    @discardableResult
+    func adjustRest(sessionID: UUID, expectedDeadline: Date, seconds: Int, date: Date = Date()) -> Bool {
+        guard archive.active?.id == sessionID, archive.restUntil == expectedDeadline,
+              seconds != 0, (-600...600).contains(seconds) else { return false }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        let deadline = max(now, expectedDeadline).addingTimeInterval(Double(seconds))
+        guard deadline.timeIntervalSince(now) <= 600 else {
+            errorMessage = TrainingError.invalidRest.localizedDescription
+            return false
+        }
+        if deadline > now {
+            changed.restUntil = deadline
+        } else {
+            changed.restUntil = nil
+            changed.restKind = nil
+            changed.restExerciseID = nil
+        }
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
+    func stopRest(sessionID: UUID, expectedDeadline: Date, date: Date = Date()) -> Bool {
+        guard archive.active?.id == sessionID, archive.restUntil == expectedDeadline else { return false }
+        return stopRest(date: date)
+    }
+
+    @discardableResult
+    func stopRest(date: Date = Date()) -> Bool {
         var changed = archive
         let now = changed.reconcileActiveTiming(at: date)
         changed.restUntil = nil
         changed.restKind = nil
         changed.restExerciseID = nil
         changed.reconcileActiveTiming(at: now)
-        save(changed)
+        return save(changed)
     }
 
     @discardableResult
@@ -491,6 +570,12 @@ final class WorkoutStore {
 
     func previousExercise(_ exercise: Exercise) -> SessionExercise? {
         exerciseHistory(for: exercise).first?.exercises.first
+    }
+
+    func previousSet(for exercise: Exercise, index: Int) -> LoggedSet? {
+        guard let previous = previousExercise(exercise) else { return nil }
+        let sets = previous.sets.filter { $0.isCompleted && $0.isValid }
+        return sets.indices.contains(index) ? sets[index] : nil
     }
 
     func exerciseHistory(for exercise: Exercise) -> [(session: WorkoutSession, exercises: [SessionExercise])] {

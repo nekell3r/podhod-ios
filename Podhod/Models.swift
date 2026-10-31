@@ -81,6 +81,13 @@ enum RepetitionsInReserve: Int, Codable, CaseIterable, Identifiable {
     case one, two, three, four, fiveOrMore
 
     var id: Int { rawValue }
+    var compactTitle: String {
+        switch self {
+        case .notRecorded: "—"
+        case .fiveOrMore: "5+"
+        default: String(rawValue)
+        }
+    }
     var title: String {
         switch self {
         case .notRecorded: "Не указан"
