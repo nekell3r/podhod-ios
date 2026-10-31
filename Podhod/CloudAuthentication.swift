@@ -44,6 +44,7 @@ private struct CloudOAuthCredentials: Codable {
     let expiresAt: Date
     let issuer: String
     let clientID: String
+    var verifiedAccountID: String?
 }
 
 private struct CloudOAuthTokenResponse: Decodable {
@@ -65,7 +66,7 @@ private struct CloudOAuthErrorResponse: Decodable {
 }
 
 private enum CloudAuthenticationError: LocalizedError {
-    case configuration, callback, state, denied, cancelled, presentation, token, expired, storage, network
+    case configuration, callback, state, denied, cancelled, presentation, token, expired, storage, network, accountMismatch
 
     var errorDescription: String? {
         switch self {
@@ -79,6 +80,7 @@ private enum CloudAuthenticationError: LocalizedError {
         case .expired: "Срок входа истёк. Войди заново."
         case .storage: "Не удалось открыть защищённое хранилище авторизации. Разблокируй устройство и повтори действие."
         case .network: "Не удалось связаться с сервером входа. Локальные записи сохранены."
+        case .accountMismatch: "Ответ сервера относится к другому аккаунту. Войди заново; локальные записи сохранены."
         }
     }
 }
@@ -116,6 +118,7 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
     private(set) var accountDetails: CloudAccountDetails?
     private(set) var profileLoading = false
     private(set) var profileError: String?
+    var verifiedAccountID: String? { credentials?.verifiedAccountID }
 
     @ObservationIgnored private var credentials: CloudOAuthCredentials?
     @ObservationIgnored private var browserSession: ASWebAuthenticationSession?
@@ -147,6 +150,18 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
     func signIn() async { await signIn(identityProvider: nil) }
 
     func signInWithTelegram() async { await signIn(identityProvider: "telegram") }
+
+    func bindVerifiedAccount(_ accountID: String, sessionID: UUID) throws {
+        guard signedIn, self.sessionID == sessionID else { throw CancellationError() }
+        guard !accountID.isEmpty, var saved = credentials,
+              saved.verifiedAccountID == nil || saved.verifiedAccountID == accountID else {
+            throw CloudAuthenticationError.accountMismatch
+        }
+        if saved.verifiedAccountID == accountID { return }
+        saved.verifiedAccountID = accountID
+        try storeCredentials(saved)
+        credentials = saved
+    }
 
     func accountManagementURL() async -> URL? {
         do {
@@ -279,7 +294,8 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
                 "grant_type": "refresh_token", "client_id": saved.clientID, "refresh_token": refreshToken
             ])
             try self.checkOperation(operation)
-            let renewed = try Self.tokenCredentials(response, provider: provider, previousRefreshToken: refreshToken)
+            var renewed = try Self.tokenCredentials(response, provider: provider, previousRefreshToken: refreshToken)
+            renewed.verifiedAccountID = self.credentials?.verifiedAccountID
             try self.storeCredentials(renewed)
             self.credentials = renewed
             self.status = "Вход выполнен"

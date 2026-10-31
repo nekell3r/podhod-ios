@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 @main
 struct PodhodApp: App {
@@ -9,17 +12,23 @@ struct PodhodApp: App {
     @State private var nutrition: NutritionPreferences
     @State private var diary: NutritionDiaryStore
     @State private var nutritionSync: NutritionSynchronization
+    @State private var bodyProgress: BodyProgressStore
     @State private var reminders: ProteinReminders
     @State private var workspaces: AccountWorkspaces
     @State private var workspaceRevision = UUID()
 
     init() {
         let workspaces = AccountWorkspaces()
+        _ = workspaces.enablePrivateProgressStorage()
         let store = WorkoutStore(fileURL: workspaces.currentDirectory.appending(path: "training.json"))
         let auth = CloudAuthentication()
         let protein = ProteinTracker(fileURL: workspaces.currentDirectory.appending(path: "protein.json"))
         let diary = NutritionDiaryStore(fileURL: workspaces.currentDirectory.appending(path: "nutrition.json"), accountStorageError: workspaces.errorMessage)
         let nutrition = NutritionPreferences(diary: diary)
+        let bodyProgress = BodyProgressStore(fileURL: workspaces.currentDirectory.appending(path: "body-progress.json"),
+            accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
+        if (auth.signedIn && auth.verifiedAccountID != workspaces.accountID)
+            || (!auth.signedIn && workspaces.accountID != nil) { bodyProgress.retire() }
         store.accountStorageError = workspaces.errorMessage
         protein.accountStorageError = workspaces.errorMessage
         nutrition.accountStorageError = workspaces.errorMessage
@@ -31,18 +40,44 @@ struct PodhodApp: App {
         _nutrition = State(initialValue: nutrition)
         _diary = State(initialValue: diary)
         _nutritionSync = State(initialValue: NutritionSynchronization(store: diary, auth: auth, accountID: workspaces.accountID))
+        _bodyProgress = State(initialValue: bodyProgress)
         _reminders = State(initialValue: ProteinReminders())
         _workspaces = State(initialValue: workspaces)
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition, diary: diary, nutritionSync: nutritionSync)
+            RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition,
+                diary: diary, nutritionSync: nutritionSync, bodyProgress: bodyProgress)
                 .id(workspaceRevision)
-                .onAppear { sync.accountDiscovered = { switchAccount(to: $0) } }
-                .onChange(of: auth.sessionID) { _, _ in
-                    if !auth.signedIn { _ = switchAccount(to: nil) }
+                .onAppear {
+                    sync.accountDiscovered = { switchAccount(to: $0) }
+                    if !auth.signedIn && workspaces.accountID != nil { _ = switchAccount(to: nil) }
                 }
+                .onChange(of: auth.sessionID) { _, _ in
+                    if auth.signedIn { bodyProgress.retire() }
+                }
+                .onChange(of: auth.signedIn) { _, signedIn in
+                    if !signedIn { _ = switchAccount(to: nil) }
+                }
+                #if os(iOS)
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                    if bodyProgress.loadFailed {
+                        let wasRetired = bodyProgress.isRetired
+                        let restored = BodyProgressStore(fileURL: workspaces.currentDirectory.appending(path: "body-progress.json"),
+                            accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
+                        if wasRetired || (auth.signedIn && auth.verifiedAccountID != workspaces.accountID) {
+                            restored.retire()
+                        }
+                        bodyProgress.retire()
+                        bodyProgress = restored
+                    }
+                    if !auth.signedIn && workspaces.accountID != nil {
+                        bodyProgress.retire()
+                        _ = switchAccount(to: nil)
+                    }
+                }
+                #endif
                 .preferredColorScheme(.dark)
                 .tint(.gymLime)
                 #if os(macOS)
@@ -56,17 +91,20 @@ struct PodhodApp: App {
     }
 
     private func switchAccount(to accountID: String?) -> Bool {
-        if !workspaces.isLegacy && workspaces.accountID == accountID { return false }
+        if !workspaces.isLegacy && workspaces.accountID == accountID && !bodyProgress.isRetired { return false }
+        bodyProgress.retire()
         do {
-            guard !store.loadFailed, !protein.loadFailed, !nutrition.loadFailed, !diary.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
+            guard !store.loadFailed, !protein.loadFailed, !nutrition.loadFailed, !diary.loadFailed,
+                  !bodyProgress.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
             guard store.pauseTimingForAccountSwitch() else { throw TrainingError.invalidArchive }
             let directory = try workspaces.prepare(accountID: accountID, legacyAccountID: sync.accountID)
             let nextStore = WorkoutStore(fileURL: directory.appending(path: "training.json"))
             let nextProtein = ProteinTracker(fileURL: directory.appending(path: "protein.json"))
             let nextDiary = NutritionDiaryStore(fileURL: directory.appending(path: "nutrition.json"))
             let nextNutrition = NutritionPreferences(diary: nextDiary)
+            let nextBody = BodyProgressStore(fileURL: directory.appending(path: "body-progress.json"), accountID: accountID)
             let nextSync = CloudSynchronization(store: nextStore, auth: auth, protein: nextProtein)
-            guard !nextStore.loadFailed, !nextProtein.loadFailed, !nextNutrition.loadFailed, nextSync.storageReady,
+            guard !nextStore.loadFailed, !nextProtein.loadFailed, !nextNutrition.loadFailed, !nextBody.loadFailed, nextSync.storageReady,
                   nextSync.accountID == nil || nextSync.accountID == accountID,
                   nextDiary.archive.accountID == nil || nextDiary.archive.accountID == accountID else { throw TrainingError.invalidArchive }
             try workspaces.commit(accountID: accountID)
@@ -74,6 +112,7 @@ struct PodhodApp: App {
             protein = nextProtein
             nutrition = nextNutrition
             diary = nextDiary
+            bodyProgress = nextBody
             nutritionSync = NutritionSynchronization(store: nextDiary, auth: auth, accountID: accountID)
             sync = nextSync
             nextStore.resumeAccountTiming()
@@ -102,6 +141,7 @@ struct RootView: View {
     @Bindable var nutrition: NutritionPreferences
     @Bindable var diary: NutritionDiaryStore
     @Bindable var nutritionSync: NutritionSynchronization
+    @Bindable var bodyProgress: BodyProgressStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var showAccount = false
     @State private var tab: AppTab = .today
@@ -116,7 +156,7 @@ struct RootView: View {
                 case .program:
                     ProgramView(store: store, sync: sync, start: { showWorkout = true })
                 case .progress:
-                    ProgressViewScreen(store: store)
+                    ProgressViewScreen(store: store, bodyProgress: bodyProgress)
                 case .nutrition:
                     NutritionHomeView(preferences: nutrition, diary: diary, sync: nutritionSync)
                 }

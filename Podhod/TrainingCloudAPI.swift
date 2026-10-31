@@ -26,7 +26,9 @@ struct TrainingCloudAPI {
     private static let http = URLSession(configuration: .ephemeral, delegate: CloudHTTPSRedirectPolicy(), delegateQueue: nil)
 
     func profile() async throws -> TrainingCloudProfile {
-        try await request("GET", path: "v1/profile")
+        let profile: TrainingCloudProfile = try await request("GET", path: "v1/profile")
+        try auth.bindVerifiedAccount(profile.id, sessionID: sessionID)
+        return profile
     }
 
     func template() async throws -> TrainingTemplateRecord {

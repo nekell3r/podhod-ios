@@ -3,6 +3,7 @@ import Charts
 
 struct ProgressViewScreen: View {
     var store: WorkoutStore
+    var bodyProgress: BodyProgressStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var period: WorkoutProgressPeriod = .month
     @State private var metric: ExerciseProgressMetric = .weight
@@ -11,6 +12,7 @@ struct ProgressViewScreen: View {
     @State private var selectedSession: WorkoutSession?
     @State private var selectedRecord: WorkoutSetRecord?
     @State private var historyExercise: Exercise?
+    @State private var showBodyProgress = false
 
     private var exercises: [Exercise] {
         let catalog = ExerciseCatalog.bundled
@@ -31,6 +33,17 @@ struct ProgressViewScreen: View {
                     Text("Тренировки, рабочие подходы и личные результаты.")
                         .font(.subheadline).foregroundStyle(Color.gymMuted)
                 }.padding(.top, 24)
+                Button { showBodyProgress = true } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "figure.stand").font(.title2)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Замеры и фото").font(.headline)
+                            Text("Личный дневник · только на этом iPhone").font(.caption).foregroundStyle(Color.gymMuted)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                    }.foregroundStyle(Color.gymLime).modifier(GymCard())
+                }.buttonStyle(.plain).accessibilityIdentifier("body.open")
                 Picker("Период прогресса", selection: $period) {
                     ForEach(WorkoutProgressPeriod.allCases) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
@@ -58,6 +71,7 @@ struct ProgressViewScreen: View {
         .sheet(item: $selectedSession) { HistoryDetail(session: $0, calendar: store.trainingCalendar) }
         .sheet(item: $selectedRecord) { HistoryDetail(session: $0.session, calendar: store.trainingCalendar, highlightedSetID: $0.id) }
         .sheet(item: $historyExercise) { ExerciseHistoryView(store: store, exercise: $0) }
+        .sheet(isPresented: $showBodyProgress) { BodyProgressView(store: bodyProgress) }
     }
 
     private func overview(_ report: WorkoutProgressReport) -> some View {
