@@ -43,7 +43,7 @@ final class AccountWorkspaces {
         guard errorMessage == nil, accountID.map({ !$0.isEmpty }) ?? true else { throw TrainingError.invalidArchive }
         let target = directory(for: accountID)
         rotateGuestOnCommit = false
-        let files = ["training.json", "protein.json", "sync-state.json", "nutrition-preferences.json"]
+        let files = ["training.json", "protein.json", "sync-state.json", "nutrition-preferences.json", "nutrition.json"]
         if isLegacy {
             rotateGuestOnCommit = accountID != nil
             let backup = rootURL.appending(path: "legacy-backups/\(UUID())", directoryHint: .isDirectory)
@@ -63,9 +63,8 @@ final class AccountWorkspaces {
         } else if self.accountID == nil, accountID != nil {
             try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
             let targetHasFiles = files.contains { FileManager.default.fileExists(atPath: target.appending(path: $0).path) }
-            let guestTraining = try? Data(contentsOf: currentDirectory.appending(path: "training.json"))
-            let targetTraining = try? Data(contentsOf: target.appending(path: "training.json"))
-            let canResumeAdoption = guestTraining != nil && guestTraining == targetTraining && files.allSatisfy { name in
+            let guestHasFiles = files.contains { FileManager.default.fileExists(atPath: currentDirectory.appending(path: $0).path) }
+            let canResumeAdoption = guestHasFiles && files.allSatisfy { name in
                 let destination = target.appending(path: name)
                 guard FileManager.default.fileExists(atPath: destination.path) else { return true }
                 return (try? Data(contentsOf: currentDirectory.appending(path: name))) == (try? Data(contentsOf: destination))

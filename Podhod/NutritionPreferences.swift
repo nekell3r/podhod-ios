@@ -9,12 +9,22 @@ private struct NutritionPreferencesArchive: Codable {
 
 @MainActor @Observable
 final class NutritionPreferences {
-    private(set) var favoriteRecipeIDs: Set<String> = []
-    private(set) var favoriteFoodIDs: Set<String> = []
+    private var localRecipeIDs: Set<String> = []
+    private var localFoodIDs: Set<String> = []
+    var favoriteRecipeIDs: Set<String> { diary.map { Set($0.archive.preferences.document.favoriteRecipeIDs) } ?? localRecipeIDs }
+    var favoriteFoodIDs: Set<String> { diary.map { Set($0.archive.preferences.document.favoriteFoodIDs) } ?? localFoodIDs }
     private(set) var loadFailed = false
     var errorMessage: String?
     @ObservationIgnored let fileURL: URL
     @ObservationIgnored var accountStorageError: String?
+    private var diary: NutritionDiaryStore?
+
+    init(diary: NutritionDiaryStore) {
+        self.diary = diary
+        fileURL = diary.fileURL
+        loadFailed = diary.loadFailed
+        errorMessage = diary.errorMessage
+    }
 
     init(fileURL: URL) {
         self.fileURL = fileURL
@@ -28,8 +38,8 @@ final class NutritionPreferences {
                       (archive.favoriteRecipeIDs + archive.favoriteFoodIDs).allSatisfy({ !$0.isEmpty && $0.count <= 200 }) else {
                     throw NutritionError.invalidPreferences
                 }
-                favoriteRecipeIDs = Set(archive.favoriteRecipeIDs)
-                favoriteFoodIDs = Set(archive.favoriteFoodIDs)
+                localRecipeIDs = Set(archive.favoriteRecipeIDs)
+                localFoodIDs = Set(archive.favoriteFoodIDs)
             }
         } catch {
             loadFailed = true
@@ -58,11 +68,16 @@ final class NutritionPreferences {
             return false
         }
         do {
+            if let diary {
+                let saved = diary.savePreferences(NutritionPreferencesDocument(favoriteRecipeIDs: recipes.sorted(), favoriteFoodIDs: foods.sorted()))
+                errorMessage = diary.errorMessage
+                return saved
+            }
             let data = try JSONEncoder().encode(NutritionPreferencesArchive(favoriteRecipeIDs: recipes.sorted(), favoriteFoodIDs: foods.sorted()))
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: fileURL, options: .atomic)
-            favoriteRecipeIDs = recipes
-            favoriteFoodIDs = foods
+            localRecipeIDs = recipes
+            localFoodIDs = foods
             errorMessage = nil
             return true
         } catch {

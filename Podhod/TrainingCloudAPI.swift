@@ -84,6 +84,44 @@ struct TrainingCloudAPI {
             expectedRevision: revision, morningTakenAt: day.morningTakenAt, eveningTakenAt: day.eveningTakenAt)))
     }
 
+    func nutritionDay(_ key: String, timezone: String) async throws -> NutritionDocumentRecord<NutritionDayDocument> {
+        let record: NutritionDocumentRecord<NutritionDayDocument> = try await request("GET", path: "v1/nutrition/days/\(key)",
+            query: [URLQueryItem(name: "timezone", value: timezone)])
+        guard record.document.date == key else { throw NutritionDiaryError.invalidResponse }
+        return record
+    }
+
+    func saveNutritionDay(_ change: NutritionPendingWrite<NutritionDayDocument>) async throws -> NutritionDocumentRecord<NutritionDayDocument> {
+        let record: NutritionDocumentRecord<NutritionDayDocument> = try await request("PUT",
+            path: "v1/nutrition/days/\(change.document.date)", body: Self.encode(change))
+        guard record.document.date == change.document.date else { throw NutritionDiaryError.invalidResponse }
+        return record
+    }
+
+    func nutritionGoals() async throws -> NutritionDocumentRecord<NutritionGoalsDocument> {
+        try await request("GET", path: "v1/nutrition/goals")
+    }
+
+    func saveNutritionGoals(_ change: NutritionPendingWrite<NutritionGoalsDocument>) async throws -> NutritionDocumentRecord<NutritionGoalsDocument> {
+        try await request("PUT", path: "v1/nutrition/goals", body: Self.encode(change))
+    }
+
+    func nutritionRecipes() async throws -> NutritionDocumentRecord<NutritionRecipesDocument> {
+        try await request("GET", path: "v1/nutrition/recipes")
+    }
+
+    func saveNutritionRecipes(_ change: NutritionPendingWrite<NutritionRecipesDocument>) async throws -> NutritionDocumentRecord<NutritionRecipesDocument> {
+        try await request("PUT", path: "v1/nutrition/recipes", body: Self.encode(change))
+    }
+
+    func nutritionPreferences() async throws -> NutritionDocumentRecord<NutritionPreferencesDocument> {
+        try await request("GET", path: "v1/nutrition/preferences")
+    }
+
+    func saveNutritionPreferences(_ change: NutritionPendingWrite<NutritionPreferencesDocument>) async throws -> NutritionDocumentRecord<NutritionPreferencesDocument> {
+        try await request("PUT", path: "v1/nutrition/preferences", body: Self.encode(change))
+    }
+
     private func request<Response: Decodable>(_ method: String, path: String, body: Data? = nil,
                                               query: [URLQueryItem] = []) async throws -> Response {
         guard auth.signedIn, auth.sessionID == sessionID else { throw CancellationError() }
