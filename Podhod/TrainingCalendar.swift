@@ -73,6 +73,15 @@ struct TrainingCalendar {
         return formatter.string(from: date)
     }
 
+    func historyDayLabel(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "d MMM yyyy"
+        return formatter.string(from: date)
+    }
+
     func date(from key: String) -> Date? {
         let parts = key.split(separator: "-")
         guard key.count == 10, parts.count == 3,
