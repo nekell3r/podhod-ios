@@ -9,6 +9,7 @@ struct ProgramView: View {
     @State private var selectedWeek = Date()
     @State private var showTemplate = false
     @State private var detailExercise: Exercise?
+    @State private var showCycle = false
 
     private var dates: [Date] { store.trainingCalendar.weekDates(containing: selectedWeek) }
     private var week: TrainingWeek { store.scheduledWeek(containing: selectedWeek) }
@@ -28,6 +29,19 @@ struct ProgramView: View {
                     Text("По датам").tag(false)
                     Text("Шаблон недели").tag(true)
                 }.pickerStyle(.segmented)
+                Button { showCycle = true } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "calendar").font(.title2)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(store.cycleState.document.plan.map { "Цикл · \($0.weeks.count) недель" } ?? "Настроить цикл")
+                                .font(.headline)
+                            Text(store.cycleState.document.plan == nil ? "Чередование недель, разгрузка и суперсеты" : "План для новых недель · открыть и изменить")
+                                .font(.caption).foregroundStyle(Color.gymMuted)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                    }.foregroundStyle(Color.gymLime).modifier(GymCard())
+                }.buttonStyle(.plain).accessibilityIdentifier("training.cycle.open")
                 if !showTemplate {
                     HStack(spacing: 10) {
                         Button { shiftWeek(-1) } label: { Image(systemName: "chevron.left").frame(width: 36, height: 44) }
@@ -82,6 +96,12 @@ struct ProgramView: View {
                                     }
                                     Text(day.exercises.isEmpty ? "Отдых или новая тренировка" : (day.title.isEmpty ? "Тренировка" : day.title))
                                         .font(.subheadline).foregroundStyle(Color.gymMuted)
+                                    if let context = day.context, !context.summary.isEmpty {
+                                        Text(context.summary).font(.caption).foregroundStyle(Color.gymLime)
+                                    }
+                                    if let groups = day.supersets, !groups.isEmpty {
+                                        Text("Суперсетов: \(groups.count)").font(.caption).foregroundStyle(Color.gymMuted)
+                                    }
                                 }
                                 Spacer(minLength: 0)
                                 Image(systemName: day.exercises.isEmpty ? "plus" : "pencil").foregroundStyle(Color.gymLime)
@@ -127,8 +147,11 @@ struct ProgramView: View {
             sync.focusedWeekStart = store.trainingCalendar.dayKey(for: store.trainingCalendar.weekStart(containing: selectedWeek))
         }
         .onDisappear { sync.focusedWeekStart = nil }
-        .sheet(item: $editingDay) { day in DayEditor(store: store, day: day, scheduledDate: editingDate) }
+        .sheet(item: $editingDay) { day in
+            DayEditor(store: store, day: day, destination: editingDate.map { .scheduled($0) } ?? .template)
+        }
         .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise) }
+        .sheet(isPresented: $showCycle) { TrainingCycleView(store: store) }
     }
 
     private func shiftWeek(_ direction: Int) {
@@ -138,16 +161,20 @@ struct ProgramView: View {
     }
 }
 
+enum TrainingDayDestination {
+    case template, scheduled(Date), cycle(cycleID: UUID, weekID: UUID)
+}
+
 struct DayEditor: View {
     var store: WorkoutStore
     @State var day: TrainingDay
-    var scheduledDate: Date?
+    var destination: TrainingDayDestination
     @State private var originalDay: TrainingDay
 
-    init(store: WorkoutStore, day: TrainingDay, scheduledDate: Date? = nil) {
+    init(store: WorkoutStore, day: TrainingDay, destination: TrainingDayDestination = .template) {
         self.store = store
         _day = State(initialValue: day)
-        self.scheduledDate = scheduledDate
+        self.destination = destination
         _originalDay = State(initialValue: day)
     }
 
@@ -161,6 +188,10 @@ struct DayEditor: View {
                 Section {
                     TextField("Например, спина и бицепс", text: $day.title)
                 } header: { Text("Название тренировки") }
+                Section("Плановая нагрузка") {
+                    WorkoutContextFields(context: $day.context)
+                    Text("Метки плана не заполняют фактический запас повторений.").font(.caption).foregroundStyle(.secondary)
+                }
                 Section {
                     if day.exercises.isEmpty {
                         Text("Добавь упражнения. Пустой день будет днём отдыха.")
@@ -168,7 +199,9 @@ struct DayEditor: View {
                     }
                     ForEach($day.exercises) { $plan in
                         DisclosureGroup {
-                            Stepper("Подходы: \(plan.setCount)", value: $plan.setCount, in: 1...12)
+                            Stepper("Подходы: \(plan.setCount)", value: Binding(get: { plan.setCount }, set: {
+                                day.setPlannedSetCount(exerciseID: plan.id, count: $0)
+                            }), in: 1...12)
                             HStack {
                                 Text("Повторы (цель)")
                                 Spacer()
@@ -187,11 +220,17 @@ struct DayEditor: View {
                             }.padding(.vertical, 6)
                         }
                     }
-                    .onDelete { day.exercises.remove(atOffsets: $0) }
+                    .onDelete { offsets in
+                        let removed = Set(offsets.map { day.exercises[$0].id })
+                        day.supersets?.removeAll { !removed.isDisjoint(with: $0.exerciseIDs) }
+                        if day.supersets?.isEmpty == true { day.supersets = nil }
+                        day.exercises.remove(atOffsets: offsets)
+                    }
                     .onMove { day.exercises.move(fromOffsets: $0, toOffset: $1) }
                     Button { showLibrary = true } label: { Label("Добавить упражнение", systemImage: "plus.circle.fill") }
                 } header: { Text("Упражнения по порядку") }
                 footer: { Text("Раскрой упражнение, чтобы настроить подходы, повторы и оба вида отдыха. После последнего упражнения отдых не запускается. Порядок меняется кнопкой «Править».") }
+                PlannedSupersetSection(day: $day)
                 Section("Нагрузка этого дня") {
                     MuscleVolumeSummary(volume: ExerciseCatalog.bundled.volume(for: day))
                         .padding(.vertical, 6)
@@ -207,7 +246,13 @@ struct DayEditor: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Сохранить") {
                         day.title = day.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let saved = scheduledDate.map { store.saveScheduledDay(day, on: $0, expected: originalDay) } ?? store.saveDay(day, expected: originalDay)
+                        let saved: Bool
+                        switch destination {
+                        case .template: saved = store.saveDay(day, expected: originalDay)
+                        case .scheduled(let date): saved = store.saveScheduledDay(day, on: date, expected: originalDay)
+                        case .cycle(let cycleID, let weekID):
+                            saved = store.saveCycleDay(day, cycleID: cycleID, weekID: weekID, expected: originalDay)
+                        }
                         if saved { dismiss() }
                         else { saveError = store.errorMessage; store.errorMessage = nil }
                     }.bold()

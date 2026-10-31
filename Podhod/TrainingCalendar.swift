@@ -5,10 +5,13 @@ struct ScheduledWorkout: Codable, Identifiable, Equatable {
     var plannedDate: String
     var title: String
     var exercises: [PlannedExercise]
+    var context: WorkoutPlanContext?
+    var supersets: [PlannedSuperset]?
+    var hasStructureMetadata: Bool { context != nil || !(supersets ?? []).isEmpty }
 
     func day(calendar: TrainingCalendar) -> TrainingDay {
         let weekday = calendar.date(from: plannedDate).map { TrainingDay.weekday(for: $0, calendar: calendar.calendar) } ?? 1
-        return TrainingDay(weekday: weekday, title: title, exercises: exercises)
+        return TrainingDay(weekday: weekday, title: title, exercises: exercises, context: context, supersets: supersets)
     }
 }
 
@@ -17,6 +20,7 @@ struct TrainingWeek: Codable, Equatable, Identifiable {
     var timezone: String
     var revision: Int64 = 0
     var workouts: [ScheduledWorkout]
+    var structureVersion: Int?
     var id: String { weekStart }
 
     init(containing date: Date, template: [TrainingDay], calendar: TrainingCalendar) {
@@ -25,8 +29,10 @@ struct TrainingWeek: Codable, Equatable, Identifiable {
         timezone = calendar.calendar.timeZone.identifier
         workouts = template.filter { !$0.exercises.isEmpty }.map { day in
             let date = calendar.calendar.date(byAdding: .day, value: day.weekday - 1, to: start) ?? start
-            return ScheduledWorkout(plannedDate: calendar.dayKey(for: date), title: day.title, exercises: day.exercises)
+            return ScheduledWorkout(plannedDate: calendar.dayKey(for: date), title: day.title, exercises: day.exercises,
+                                    context: day.context, supersets: day.supersets)
         }
+        if workouts.contains(where: \.hasStructureMetadata) { structureVersion = 1 }
     }
 
     func applyingTemplate(_ template: [TrainingDay]) throws -> TrainingWeek {
@@ -34,6 +40,7 @@ struct TrainingWeek: Codable, Equatable, Identifiable {
         guard let date = calendar.date(from: weekStart) else { throw TrainingError.invalidTrainingDate }
         var updated = TrainingWeek(containing: date, template: template, calendar: calendar)
         updated.revision = revision
+        if structureVersion == 1 { updated.structureVersion = 1 }
         for index in updated.workouts.indices {
             if let previous = workouts.first(where: { $0.plannedDate == updated.workouts[index].plannedDate }) {
                 updated.workouts[index].id = previous.id

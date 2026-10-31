@@ -48,6 +48,8 @@ struct TrainingDay: Codable, Identifiable, Equatable {
     var weekday: Int
     var title: String
     var exercises: [PlannedExercise]
+    var context: WorkoutPlanContext?
+    var supersets: [PlannedSuperset]?
     var id: Int { weekday }
     var setCount: Int { exercises.reduce(0) { $0 + $1.setCount } }
     var name: String { Self.names[weekday - 1] }
@@ -176,6 +178,9 @@ struct WorkoutSession: Codable, Identifiable, Equatable {
     var plannedDate: String?
     var currentExercise = 0
     var exercises: [SessionExercise]
+    var structureVersion: Int?
+    var context: WorkoutPlanContext?
+    var supersets: [SessionSuperset]?
     var completedSets: Int { exercises.flatMap(\.sets).filter(\.isCompleted).count }
     var totalSets: Int { exercises.reduce(0) { $0 + $1.sets.count } }
     var volume: Double { exercises.flatMap(\.sets).reduce(0) { $0 + $1.volume } }
@@ -189,7 +194,8 @@ struct WorkoutSession: Codable, Identifiable, Equatable {
         let sets = exercises.flatMap(\.sets)
         guard Set(sets.map(\.id)).count == sets.count else { return false }
         let indexed = Dictionary(uniqueKeysWithValues: sets.map { ($0.id, $0) })
-        return other.exercises.flatMap(\.sets).filter(\.isCompleted).allSatisfy { indexed[$0.id] == $0 }
+        return preservesSupersetLinks(from: other) &&
+            other.exercises.flatMap(\.sets).filter(\.isCompleted).allSatisfy { indexed[$0.id] == $0 }
     }
 
     init(day: TrainingDay, date: Date = Date()) {
@@ -201,6 +207,22 @@ struct WorkoutSession: Codable, Identifiable, Equatable {
                             restSeconds: plan.restSeconds,
                             restAfterExerciseSeconds: plan.restAfterExerciseSeconds,
                             sets: (0..<plan.setCount).map { _ in LoggedSet() })
+        }
+        context = day.context
+        if day.hasStructureMetadata { structureVersion = 1 }
+        supersets = (day.supersets ?? []).compactMap { group in
+            let indices = group.exerciseIDs.compactMap { id in day.exercises.firstIndex { $0.id == id } }
+            guard indices.count == group.exerciseIDs.count, let first = indices.first,
+                  indices.allSatisfy({ exercises[$0].sets.count == exercises[first].sets.count }) else { return nil }
+            let rounds = exercises[first].sets.indices.map { ordinal in
+                SupersetRound(ordinal: ordinal + 1, setIDs: indices.map { exercises[$0].sets[ordinal].id })
+            }
+            return SessionSuperset(exerciseIDs: indices.map { exercises[$0].id }, restSeconds: group.restSeconds, rounds: rounds)
+        }
+        if supersets?.isEmpty == true { supersets = nil }
+        if let group = supersets?.first(where: { $0.exerciseIDs.contains(exercises[currentExercise].id) }),
+           let first = group.exerciseIDs.first, let index = exercises.firstIndex(where: { $0.id == first }) {
+            currentExercise = index
         }
     }
 }
@@ -216,7 +238,7 @@ struct SetRemovalIntent: Codable, Equatable, Hashable {
 }
 
 struct TrainingArchive: Codable, Equatable {
-    var version = 5
+    var version = 6
     var week = TrainingDay.initialWeek()
     var history: [WorkoutSession] = []
     var active: WorkoutSession?
@@ -227,6 +249,17 @@ struct TrainingArchive: Codable, Equatable {
     var editedWeekStarts: [String]?
     var timezone: String?
     var setRemovalIntents: [SetRemovalIntent]?
+    var templateStructureVersion: Int?
+    var trainingCycle: RevisionedDocumentState<TrainingCycleDocument>?
+
+    var hasValidStructure: Bool {
+        (0...1).contains(templateStructureVersion ?? 0) &&
+            (templateStructureVersion == 1 || week.allSatisfy { !$0.hasStructureMetadata }) &&
+            week.allSatisfy { $0.hasValidPlannedStructure && $0.context?.cycle == nil } &&
+            (scheduledWeeks ?? []).allSatisfy(\.hasValidStructure) &&
+            (active?.hasValidStructure ?? true) && history.allSatisfy(\.hasValidStructure) &&
+            (trainingCycle?.isValid(documentIsValid: { $0.isValid }) ?? true)
+    }
 
     var hasValidSetRemovalIntents: Bool {
         let intents = setRemovalIntents ?? []
@@ -243,6 +276,7 @@ struct TrainingArchive: Codable, Equatable {
 enum TrainingError: LocalizedError {
     case invalidSet, emptyDay, unfinishedSets, noCompletedSets, invalidProgram, unsupportedArchive, invalidArchive
     case invalidRest, scheduleConflict, invalidTrainingDate, staleProgramEdit, staleWorkoutEdit
+    case invalidCycle, invalidSuperset
 
     var errorDescription: String? {
         switch self {
@@ -252,6 +286,8 @@ enum TrainingError: LocalizedError {
         case .noCompletedSets: "Запиши хотя бы один подход перед завершением тренировки."
         case .invalidProgram: "Проверь название, количество подходов и время отдыха."
         case .invalidRest: "Время отдыха должно быть от 0 до 600 секунд."
+        case .invalidCycle: "Проверь цикл: 2–12 недель, начало в понедельник, семь дней на неделю и допустимые подходы. Для волны нужны хотя бы 4 недели."
+        case .invalidSuperset: "Проверь суперсет: 2–4 разных упражнения, одинаковое число кругов и отдых до 600 секунд. Выполненные связи сохраняются."
         case .staleProgramEdit: "Программа изменилась, пока был открыт редактор. Твой черновик остался на этом экране. Закрой редактор и открой актуальный день перед повторным изменением."
         case .staleWorkoutEdit: "Тренировка или подходы изменились, пока был открыт выбор. Закрой его и открой актуальное упражнение перед повторным изменением."
         case .scheduleConflict: "На этой дате уже есть тренировка. Сначала выбери для неё другой день."

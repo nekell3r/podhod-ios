@@ -117,7 +117,7 @@ final class NutritionSynchronization {
         defer { isSyncing = false }
         let api = TrainingCloudAPI(auth: auth)
         try await verifyAccount(api)
-        var days: [NutritionDocumentRecord<NutritionDayDocument>] = []
+        var days: [RevisionedDocumentRecord<NutritionDayDocument>] = []
         for key in range.dayKeys {
             guard !store.archive.days.contains(where: { $0.document.date == key && ($0.pending != nil || $0.conflict != nil) }) else {
                 throw NutritionDiaryError.unsyncedExport
@@ -141,9 +141,9 @@ final class NutritionSynchronization {
     }
 
     private func synchronizeDocument<Document>(
-        at path: WritableKeyPath<NutritionDiaryArchive, NutritionDocumentState<Document>>,
-        read: @MainActor () async throws -> NutritionDocumentRecord<Document>,
-        write: @MainActor (NutritionPendingWrite<Document>) async throws -> NutritionDocumentRecord<Document>
+        at path: WritableKeyPath<NutritionDiaryArchive, RevisionedDocumentState<Document>>,
+        read: @MainActor () async throws -> RevisionedDocumentRecord<Document>,
+        write: @MainActor (PendingDocumentWrite<Document>) async throws -> RevisionedDocumentRecord<Document>
     ) async throws {
         guard store.archive[keyPath: path].conflict == nil else { return }
         if let pending = store.archive[keyPath: path].pending {
@@ -219,8 +219,8 @@ final class NutritionSynchronization {
         if !conflicts.contains(resource) { await synchronize() }
     }
 
-    private func resolveDocument<Document>(at path: WritableKeyPath<NutritionDiaryArchive, NutritionDocumentState<Document>>,
-                                           usingServer: Bool, read: @MainActor () async throws -> NutritionDocumentRecord<Document>) async throws {
+    private func resolveDocument<Document>(at path: WritableKeyPath<NutritionDiaryArchive, RevisionedDocumentState<Document>>,
+                                           usingServer: Bool, read: @MainActor () async throws -> RevisionedDocumentRecord<Document>) async throws {
         let expected = store.archive[keyPath: path].conflict
         let remote = try await read()
         try Task.checkCancellation()

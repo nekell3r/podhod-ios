@@ -97,7 +97,7 @@ struct TodayView: View {
             }
         }
         .task { store.ensureWeek(containing: Date()) }
-        .sheet(isPresented: $showEditor) { DayEditor(store: store, day: day, scheduledDate: Date()) }
+        .sheet(isPresented: $showEditor) { DayEditor(store: store, day: day, destination: .scheduled(Date())) }
         .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise) }
         .confirmationDialog("Остановить тренировку?", isPresented: $showStop, titleVisibility: .visible, presenting: stoppingSession) { session in
             if session.completedSets > 0 {

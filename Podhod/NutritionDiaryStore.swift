@@ -4,10 +4,10 @@ import Observation
 struct NutritionDiaryArchive: Codable, Equatable {
     var version = 1
     var accountID: String?
-    var days: [NutritionDocumentState<NutritionDayDocument>] = []
-    var goals = NutritionDocumentState(document: NutritionGoalsDocument())
-    var recipes = NutritionDocumentState(document: NutritionRecipesDocument())
-    var preferences = NutritionDocumentState(document: NutritionPreferencesDocument())
+    var days: [RevisionedDocumentState<NutritionDayDocument>] = []
+    var goals = RevisionedDocumentState(document: NutritionGoalsDocument())
+    var recipes = RevisionedDocumentState(document: NutritionRecipesDocument())
+    var preferences = RevisionedDocumentState(document: NutritionPreferencesDocument())
 
     var isValid: Bool {
         version == 1 && (accountID.map { !$0.isEmpty } ?? true) && Set(days.map { $0.document.date }).count == days.count && days.allSatisfy { state in
@@ -73,7 +73,7 @@ final class NutritionDiaryStore {
         guard archive.accountID == nil else { throw NutritionDiaryError.accountMismatch }
         let days = range.dayKeys.map { key in
             let state = archive.days.first { $0.document.date == key }
-            return NutritionDocumentRecord(revision: state?.acknowledged?.revision ?? 0,
+            return RevisionedDocumentRecord(revision: state?.acknowledged?.revision ?? 0,
                 document: state?.document ?? NutritionDayDocument(date: key, timezone: range.timezone))
         }
         return NutritionDiaryExport(source: "local-guest", days: days)
@@ -117,7 +117,7 @@ final class NutritionDiaryStore {
             changed.days[index].edit(document)
             changed.days[index].commitFirstWrite()
         } else {
-            changed.days.append(NutritionDocumentState(localDocument: document))
+            changed.days.append(RevisionedDocumentState(localDocument: document))
         }
         return save(changed)
     }
@@ -172,13 +172,13 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func receiveDay(_ remote: NutritionDocumentRecord<NutritionDayDocument>) -> Bool {
+    func receiveDay(_ remote: RevisionedDocumentRecord<NutritionDayDocument>) -> Bool {
         var changed = archive
         do {
             if let index = changed.days.firstIndex(where: { $0.document.date == remote.document.date }) {
                 try changed.days[index].receive(remote)
             } else {
-                var state = NutritionDocumentState(document: remote.document)
+                var state = RevisionedDocumentState(document: remote.document)
                 try state.receive(remote)
                 changed.days.append(state)
             }
@@ -187,7 +187,7 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func acknowledgeDay(requestID: UUID, record: NutritionDocumentRecord<NutritionDayDocument>) -> Bool {
+    func acknowledgeDay(requestID: UUID, record: RevisionedDocumentRecord<NutritionDayDocument>) -> Bool {
         guard let index = archive.days.firstIndex(where: { $0.document.date == record.document.date }) else { return false }
         var changed = archive
         do {
@@ -197,7 +197,7 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func rejectDay(requestID: UUID, record: NutritionDocumentRecord<NutritionDayDocument>) -> Bool {
+    func rejectDay(requestID: UUID, record: RevisionedDocumentRecord<NutritionDayDocument>) -> Bool {
         guard let index = archive.days.firstIndex(where: { $0.document.date == record.document.date }) else { return false }
         var changed = archive
         do {
@@ -207,8 +207,8 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func receive<Document>(_ remote: NutritionDocumentRecord<Document>,
-                           at path: WritableKeyPath<NutritionDiaryArchive, NutritionDocumentState<Document>>) -> Bool {
+    func receive<Document>(_ remote: RevisionedDocumentRecord<Document>,
+                           at path: WritableKeyPath<NutritionDiaryArchive, RevisionedDocumentState<Document>>) -> Bool {
         var changed = archive
         do {
             try changed[keyPath: path].receive(remote)
@@ -217,8 +217,8 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func acknowledge<Document>(requestID: UUID, record: NutritionDocumentRecord<Document>,
-                               at path: WritableKeyPath<NutritionDiaryArchive, NutritionDocumentState<Document>>) -> Bool {
+    func acknowledge<Document>(requestID: UUID, record: RevisionedDocumentRecord<Document>,
+                               at path: WritableKeyPath<NutritionDiaryArchive, RevisionedDocumentState<Document>>) -> Bool {
         var changed = archive
         do {
             try changed[keyPath: path].acknowledge(requestID: requestID, record: record)
@@ -227,8 +227,8 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func reject<Document>(requestID: UUID, record: NutritionDocumentRecord<Document>,
-                          at path: WritableKeyPath<NutritionDiaryArchive, NutritionDocumentState<Document>>) -> Bool {
+    func reject<Document>(requestID: UUID, record: RevisionedDocumentRecord<Document>,
+                          at path: WritableKeyPath<NutritionDiaryArchive, RevisionedDocumentState<Document>>) -> Bool {
         var changed = archive
         do {
             try changed[keyPath: path].reject(requestID: requestID, remote: record)
@@ -237,7 +237,7 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func resolveDay(_ key: String, usingServer: Bool, expected: NutritionDocumentRecord<NutritionDayDocument>) -> Bool {
+    func resolveDay(_ key: String, usingServer: Bool, expected: RevisionedDocumentRecord<NutritionDayDocument>) -> Bool {
         guard let index = archive.days.firstIndex(where: { $0.document.date == key }), expected.document.date == key else { return false }
         var changed = archive
         do {
@@ -251,8 +251,8 @@ final class NutritionDiaryStore {
     }
 
     @discardableResult
-    func resolve<Document>(usingServer: Bool, expected: NutritionDocumentRecord<Document>,
-                           at path: WritableKeyPath<NutritionDiaryArchive, NutritionDocumentState<Document>>) -> Bool {
+    func resolve<Document>(usingServer: Bool, expected: RevisionedDocumentRecord<Document>,
+                           at path: WritableKeyPath<NutritionDiaryArchive, RevisionedDocumentState<Document>>) -> Bool {
         var changed = archive
         do {
             try backUpConflict(archive)

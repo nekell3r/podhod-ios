@@ -80,6 +80,7 @@ struct WorkoutView: View {
                                 showDiscard = true
                             }
                         } label: { Image(systemName: "ellipsis.circle") }
+                            .accessibilityLabel("Действия тренировки")
                     }
                 }
                 #if os(iOS)
@@ -169,6 +170,14 @@ struct WorkoutView: View {
                                 .accessibilityLabel("Время тренировки")
                         }
                     }
+                    if let context = session.context {
+                        if !context.summary.isEmpty {
+                            Text(context.summary).font(.caption).foregroundStyle(Color.gymLime)
+                        }
+                        if let cycle = context.cycle {
+                            Text("Цикл · неделя \(cycle.weekNumber)").font(.caption).foregroundStyle(Color.gymMuted)
+                        }
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         overviewLayout {
                             Text("Записано \(session.completedSets) из \(session.totalSets) подходов")
@@ -179,6 +188,17 @@ struct WorkoutView: View {
                             .tint(.gymLime).accessibilityLabel("Разобрано подходов")
                     }
                     exerciseOverview(session)
+                    if let group = session.supersets?.first(where: { !$0.isClosed && $0.exerciseIDs.contains(exercise.id) }) {
+                        let pending = Set(exercise.sets.filter { !$0.isCompleted }.map(\.id))
+                        if let round = group.rounds.first(where: { !$0.setIDs.compactMap { $0 }.filter(pending.contains).isEmpty }) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label("Суперсет · круг \(round.ordinal)", systemImage: "link").font(.subheadline.bold())
+                                Text(group.exerciseIDs.compactMap { id in session.exercises.first { $0.id == id }?.exercise.name }.joined(separator: " → "))
+                                    .font(.caption).foregroundStyle(Color.gymMuted)
+                                Text("Отдых после круга: \(group.restSeconds) с").font(.caption)
+                            }.foregroundStyle(Color.gymLime).padding(.vertical, 8)
+                        }
+                    }
                     HStack(alignment: .top, spacing: 14) {
                         if !dynamicTypeSize.isAccessibilitySize {
                             ExerciseArt(kind: ExerciseCatalog.bundled.illustration(for: exercise.exercise))

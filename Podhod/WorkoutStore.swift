@@ -19,16 +19,16 @@ final class WorkoutStore {
             if FileManager.default.fileExists(atPath: self.fileURL.path) {
                 let data = try Data(contentsOf: self.fileURL)
                 var loaded = try JSONDecoder().decode(TrainingArchive.self, from: data)
-                guard (1...5).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
+                guard (1...6).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
                 guard loaded.week.map(\.weekday).sorted() == Array(1...7),
                       loaded.week.allSatisfy({ $0.exercises.allSatisfy { (1...12).contains($0.setCount) } }),
                       loaded.active.map({ !$0.exercises.isEmpty && $0.exercises.indices.contains($0.currentExercise) }) ?? true
                 else { throw TrainingError.invalidArchive }
                 guard loaded.active.map({ session in session.timing?.isValid(for: session) ?? true }) ?? true,
                       loaded.history.allSatisfy({ $0.timing?.isValid(for: $0) ?? true }),
-                      loaded.hasValidSetRemovalIntents else { throw TrainingError.invalidArchive }
-                migrationSourceVersion = loaded.version < 5 ? loaded.version : nil
-                loaded.version = 5
+                      loaded.hasValidSetRemovalIntents, loaded.hasValidStructure else { throw TrainingError.invalidArchive }
+                migrationSourceVersion = loaded.version < 6 ? loaded.version : nil
+                loaded.version = 6
                 archive = loaded
             }
         } catch {
@@ -40,9 +40,11 @@ final class WorkoutStore {
     var exerciseLibrary: [Exercise] {
         let catalog = ExerciseCatalog.bundled
         var seen: Set<UUID> = []
-        let saved = archive.week.flatMap(\.exercises).map(\.exercise) +
-            (archive.scheduledWeeks ?? []).flatMap(\.workouts).flatMap(\.exercises).map(\.exercise) +
-            (archive.active?.exercises ?? []).map(\.exercise) + archive.history.flatMap(\.exercises).map(\.exercise)
+        var saved = archive.week.flatMap(\.exercises).map(\.exercise)
+        saved += (archive.trainingCycle?.document.plan?.weeks ?? []).flatMap(\.days).flatMap(\.exercises).map(\.exercise)
+        saved += (archive.scheduledWeeks ?? []).flatMap(\.workouts).flatMap(\.exercises).map(\.exercise)
+        saved += (archive.active?.exercises ?? []).map(\.exercise)
+        saved += archive.history.flatMap(\.exercises).map(\.exercise)
         return catalog.exercises.map(\.exercise) + saved.filter {
             catalog.entry(for: $0.id) == nil && seen.insert($0.id).inserted
         }
@@ -51,6 +53,67 @@ final class WorkoutStore {
     var trainingCalendar: TrainingCalendar { TrainingCalendar(timezone: archive.timezone ?? TimeZone.current.identifier) }
 
     var today: TrainingDay { scheduledWeek(containing: Date()).day(on: Date(), calendar: trainingCalendar) }
+
+    var cycleState: RevisionedDocumentState<TrainingCycleDocument> {
+        archive.trainingCycle ?? RevisionedDocumentState(document: TrainingCycleDocument())
+    }
+
+    @discardableResult
+    func saveTrainingCycle(_ plan: TrainingCyclePlan?, expected: TrainingCycleDocument) -> Bool {
+        guard cycleState.document == expected else {
+            errorMessage = TrainingError.staleProgramEdit.localizedDescription
+            return false
+        }
+        let document = TrainingCycleDocument(plan: plan)
+        guard document.isValid else {
+            errorMessage = TrainingError.invalidCycle.localizedDescription
+            return false
+        }
+        var state = cycleState
+        state.edit(document)
+        state.commitFirstWrite()
+        return saveCycleState(state)
+    }
+
+    @discardableResult
+    func saveCycleDay(_ day: TrainingDay, cycleID: UUID, weekID: UUID, expected: TrainingDay) -> Bool {
+        guard var plan = cycleState.document.plan, plan.id == cycleID,
+              let week = plan.weeks.firstIndex(where: { $0.id == weekID }),
+              let index = plan.weeks[week].days.firstIndex(where: { $0.weekday == day.weekday }),
+              plan.weeks[week].days[index] == expected else {
+            errorMessage = TrainingError.staleProgramEdit.localizedDescription
+            return false
+        }
+        plan.weeks[week].days[index] = day
+        return saveTrainingCycle(plan, expected: cycleState.document)
+    }
+
+    @discardableResult
+    func saveCycleState(_ state: RevisionedDocumentState<TrainingCycleDocument>) -> Bool {
+        guard state.isValid(documentIsValid: { $0.isValid }) else {
+            errorMessage = TrainingError.invalidCycle.localizedDescription
+            return false
+        }
+        if state == archive.trainingCycle { return true }
+        if let conflict = state.conflict, conflict != archive.trainingCycle?.conflict {
+            do { try backupCycleConflict(remote: conflict) }
+            catch {
+                errorMessage = "Не удалось сохранить обе версии цикла. Локальные записи не заменены."
+                return false
+            }
+        }
+        var changed = archive
+        changed.trainingCycle = state
+        return save(changed)
+    }
+
+    func backupCycleConflict(remote: RevisionedDocumentRecord<TrainingCycleDocument>) throws {
+        let directory = fileURL.deletingLastPathComponent().appendingPathComponent("Conflicts", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let prefix = UUID().uuidString
+        try JSONEncoder().encode(archive).write(to: directory.appendingPathComponent("\(prefix)-local.json"), options: .atomic)
+        try JSONEncoder().encode(remote).write(to: directory.appendingPathComponent("\(prefix)-cycle-server.json"), options: .atomic)
+    }
 
     @discardableResult
     func pauseTimingForAccountSwitch(date: Date = Date()) -> Bool {
@@ -71,7 +134,9 @@ final class WorkoutStore {
     func scheduledWeek(containing date: Date) -> TrainingWeek {
         let key = trainingCalendar.dayKey(for: trainingCalendar.weekStart(containing: date))
         return archive.scheduledWeeks?.first { $0.weekStart == key }
-            ?? TrainingWeek(containing: date, template: archive.week, calendar: trainingCalendar)
+            ?? TrainingWeek(containing: date,
+                            template: archive.trainingCycle?.document.plan?.template(containing: date, calendar: trainingCalendar) ?? archive.week,
+                            calendar: trainingCalendar)
     }
 
     @discardableResult
@@ -80,6 +145,9 @@ final class WorkoutStore {
         if archive.scheduledWeeks?.contains(where: { $0.weekStart == week.weekStart }) == true { return true }
         var changed = archive
         changed.scheduledWeeks = (changed.scheduledWeeks ?? []) + [week]
+        if archive.trainingCycle?.document.plan?.phase(containing: date, calendar: trainingCalendar) != nil {
+            changed.editedWeekStarts = Array(Set((changed.editedWeekStarts ?? []) + [week.weekStart])).sorted()
+        }
         changed.timezone = trainingCalendar.calendar.timeZone.identifier
         return save(changed)
     }
@@ -90,7 +158,7 @@ final class WorkoutStore {
             errorMessage = TrainingError.staleProgramEdit.localizedDescription
             return false
         }
-        guard day.exercises.allSatisfy({ !$0.exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        guard day.hasValidPlannedStructure, day.exercises.allSatisfy({ !$0.exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             (1...12).contains($0.setCount) && !$0.targetReps.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             (0...600).contains($0.restSeconds) && (0...600).contains($0.restAfterExerciseSeconds) }) else {
             errorMessage = TrainingError.invalidProgram.localizedDescription
@@ -106,8 +174,10 @@ final class WorkoutStore {
         let existing = week.workouts.first { $0.plannedDate == key }
         week.workouts.removeAll { $0.plannedDate == key }
         if !day.exercises.isEmpty {
-            week.workouts.append(ScheduledWorkout(id: existing?.id ?? UUID(), plannedDate: key, title: day.title, exercises: day.exercises))
+            week.workouts.append(ScheduledWorkout(id: existing?.id ?? UUID(), plannedDate: key, title: day.title,
+                exercises: day.exercises, context: day.context, supersets: day.supersets))
         }
+        if day.hasStructureMetadata { week.structureVersion = 1 }
         week.workouts.sort { $0.plannedDate < $1.plannedDate }
         weeks[index] = week
         changed.scheduledWeeks = weeks
@@ -164,6 +234,10 @@ final class WorkoutStore {
             errorMessage = "Сохранение недоступно: исходный файл не удалось прочитать. Данные защищены от перезаписи."
             return false
         }
+        guard changed.active?.hasValidStructure ?? true else {
+            errorMessage = TrainingError.invalidSuperset.localizedDescription
+            return false
+        }
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let version = migrationSourceVersion, FileManager.default.fileExists(atPath: fileURL.path) {
@@ -198,7 +272,8 @@ final class WorkoutStore {
             errorMessage = TrainingError.staleProgramEdit.localizedDescription
             return false
         }
-        guard let index = archive.week.firstIndex(where: { $0.weekday == day.weekday }),
+        guard day.hasValidPlannedStructure, day.context?.cycle == nil,
+              let index = archive.week.firstIndex(where: { $0.weekday == day.weekday }),
               day.exercises.allSatisfy({ !$0.exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
                   (1...12).contains($0.setCount) && !$0.targetReps.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (0...600).contains($0.restSeconds) &&
                   (0...600).contains($0.restAfterExerciseSeconds) }) else {
@@ -207,6 +282,7 @@ final class WorkoutStore {
         }
         var changed = archive
         changed.week[index] = day
+        if day.hasStructureMetadata { changed.templateStructureVersion = 1 }
         return save(changed)
     }
 
@@ -225,7 +301,7 @@ final class WorkoutStore {
     @discardableResult
     func start(day: TrainingDay, date: Date = Date()) -> Bool {
         if archive.active != nil { return true }
-        guard !day.exercises.isEmpty else {
+        guard !day.exercises.isEmpty, day.hasValidPlannedStructure else {
             errorMessage = TrainingError.emptyDay.localizedDescription
             return false
         }
@@ -312,6 +388,7 @@ final class WorkoutStore {
             restSeconds: original.restSeconds, restAfterExerciseSeconds: original.restAfterExerciseSeconds,
             sets: (0..<remaining).map { _ in LoggedSet() })
         changed.active?.exercises.insert(replacement, at: index + 1)
+        changed.active?.remapSupersets(replacing: original, with: replacement)
         changed.active?.currentExercise = index + 1
         changed.reconcileActiveTiming(at: now)
         return save(changed)
@@ -353,6 +430,88 @@ final class WorkoutStore {
     }
 
     @discardableResult
+    func createActiveSuperset(sessionID: UUID, expectedExercises: [SessionExercise], restSeconds: Int,
+                              date: Date = Date()) -> Bool {
+        guard let session = archive.active, session.id == sessionID,
+              expectedExercises.allSatisfy({ original in session.exercises.first { $0.id == original.id } == original }) else {
+            errorMessage = TrainingError.staleWorkoutEdit.localizedDescription
+            return false
+        }
+        let members = expectedExercises.map(\.id)
+        let pending = expectedExercises.map { $0.sets.filter { !$0.isCompleted } }
+        guard (2...4).contains(members.count), Set(members).count == members.count,
+              (0...600).contains(restSeconds), (session.supersets ?? []).count < 50,
+              expectedExercises.allSatisfy({ !$0.isSkipped }),
+              let count = pending.first?.count, count > 0, pending.allSatisfy({ $0.count == count }),
+              (session.supersets ?? []).filter({ !$0.isClosed }).allSatisfy({ Set($0.exerciseIDs).isDisjoint(with: members) })
+        else {
+            errorMessage = TrainingError.invalidSuperset.localizedDescription
+            return false
+        }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        let rounds = (0..<count).map { number in
+            SupersetRound(ordinal: number + 1, setIDs: pending.map { $0[number].id })
+        }
+        changed.active?.structureVersion = 1
+        let groups = (changed.active?.supersets ?? []) +
+            [SessionSuperset(exerciseIDs: members, restSeconds: restSeconds, rounds: rounds)]
+        changed.active?.supersets = groups
+        if let current = changed.active?.currentExercise,
+           let card = changed.active?.exercises[current], members.contains(card.id),
+           let first = members.first, let index = changed.active?.exercises.firstIndex(where: { $0.id == first }) {
+            changed.active?.currentExercise = index
+        }
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
+    func addSupersetRound(sessionID: UUID, expected: SessionSuperset, date: Date = Date()) -> Bool {
+        guard var session = archive.active, session.id == sessionID,
+              let index = session.supersets?.firstIndex(where: { $0.id == expected.id }),
+              session.supersets?[index] == expected, !expected.isClosed else {
+            errorMessage = TrainingError.staleWorkoutEdit.localizedDescription
+            return false
+        }
+        let members = expected.exerciseIDs.compactMap { id in session.exercises.firstIndex { $0.id == id } }
+        let available = members.filter { !session.exercises[$0].isSkipped }
+        let ordinal = (expected.rounds.last?.ordinal ?? 0) + 1
+        guard available.count >= 2, available.allSatisfy({ session.exercises[$0].sets.count < 12 }),
+              ordinal <= 600, expected.rounds.count < 600 else {
+            errorMessage = "Нельзя добавить круг: нужны два непропущенных участника и место до 12 подходов у каждого."
+            return false
+        }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        session.timing = changed.active?.timing
+        let slots: [UUID?] = members.map { member in
+            guard !session.exercises[member].isSkipped else { return nil }
+            let set = LoggedSet()
+            session.exercises[member].sets.append(set)
+            return set.id
+        }
+        session.supersets?[index].rounds.append(SupersetRound(ordinal: ordinal, setIDs: slots))
+        changed.active = session
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
+    func closeActiveSuperset(sessionID: UUID, expected: SessionSuperset, date: Date = Date()) -> Bool {
+        guard archive.active?.id == sessionID,
+              archive.active?.supersets?.first(where: { $0.id == expected.id }) == expected, !expected.isClosed else {
+            errorMessage = TrainingError.staleWorkoutEdit.localizedDescription
+            return false
+        }
+        var changed = archive
+        let now = changed.reconcileActiveTiming(at: date)
+        changed.active?.closeSuperset(id: expected.id)
+        changed.reconcileActiveTiming(at: now)
+        return save(changed)
+    }
+
+    @discardableResult
     func removeActiveSet(sessionID: UUID, exerciseID: UUID, setID: UUID, date: Date = Date()) -> Bool {
         guard let session = archive.active, session.id == sessionID,
               let e = session.exercises.firstIndex(where: { $0.id == exerciseID }),
@@ -372,6 +531,7 @@ final class WorkoutStore {
             intents.append(intent)
         }
         changed.active?.exercises[e].sets.remove(at: s)
+        changed.active?.removeSupersetLink(setID: setID)
         changed.setRemovalIntents = intents
         changed.reconcileActiveTiming(at: now)
         return save(changed)
@@ -414,6 +574,12 @@ final class WorkoutStore {
               let s = session.exercises[e].sets.firstIndex(where: { $0.id == setID }),
               !session.exercises[e].isSkipped else { return false }
         let completing = !session.exercises[e].sets[s].isCompleted
+        if !completing && (session.supersets ?? []).contains(where: {
+            $0.isClosed && $0.rounds.contains { $0.setIDs.contains(setID) }
+        }) {
+            errorMessage = "Этот подход сохранён в закрытом круге. Снять выполнение нельзя; оценку запаса можно изменить."
+            return false
+        }
         if completing && !session.exercises[e].sets[s].isValid {
             errorMessage = TrainingError.invalidSet.localizedDescription
             return false
@@ -422,6 +588,17 @@ final class WorkoutStore {
         let now = changed.reconcileActiveTiming(at: date)
         session.timing = changed.active?.timing
         session.exercises[e].sets[s].isCompleted = completing
+        if completing, let continuation = session.supersetContinuation(after: setID) {
+            if let next = continuation.nextExerciseID, let index = session.exercises.firstIndex(where: { $0.id == next }) {
+                session.currentExercise = index
+            }
+            changed.active = session
+            changed.restUntil = continuation.restSeconds > 0 ? now.addingTimeInterval(Double(continuation.restSeconds)) : nil
+            changed.restKind = continuation.restSeconds > 0 ? .betweenSets : nil
+            changed.restExerciseID = continuation.restSeconds > 0 ? exerciseID : nil
+            changed.reconcileActiveTiming(at: now)
+            return save(changed)
+        }
         changed.active = session
         if completing {
             let completedExercise = session.exercises[e].isCompleted
@@ -453,6 +630,7 @@ final class WorkoutStore {
         let now = changed.reconcileActiveTiming(at: date)
         session.timing = changed.active?.timing
         session.exercises[e].isSkipped = isSkipped
+        if isSkipped { session.closeSupersetsAfterSkip() }
         if isSkipped && session.currentExercise == e {
             let next = session.exercises.indices.dropFirst(e + 1).first { !session.exercises[$0].isResolved }
                 ?? session.exercises.indices.prefix(e).first { !session.exercises[$0].isResolved }
@@ -591,22 +769,24 @@ final class WorkoutStore {
     }
 
     @discardableResult
-    func replaceTemplate(_ days: [TrainingDay]) -> Bool {
-        guard days.map(\.weekday).sorted() == Array(1...7),
-              days.allSatisfy({ $0.exercises.allSatisfy { (1...12).contains($0.setCount) &&
-                  (0...600).contains($0.restSeconds) && (0...600).contains($0.restAfterExerciseSeconds) } }) else {
+    func replaceTemplate(_ days: [TrainingDay], structureVersion: Int? = nil) -> Bool {
+        guard (0...1).contains(structureVersion ?? 0), days.map(\.weekday).sorted() == Array(1...7),
+              days.allSatisfy({ $0.hasValidPlannedStructure && $0.context?.cycle == nil }) else {
             errorMessage = TrainingError.invalidProgram.localizedDescription
             return false
         }
         var changed = archive
         changed.week = days.sorted { $0.weekday < $1.weekday }
+        if structureVersion == 1 || days.contains(where: \.hasStructureMetadata) || changed.templateStructureVersion == 1 {
+            changed.templateStructureVersion = 1
+        }
         return save(changed)
     }
 
     @discardableResult
     func replaceScheduledWeek(_ week: TrainingWeek) -> Bool {
         let calendar = TrainingCalendar(timezone: week.timezone)
-        guard let start = calendar.date(from: week.weekStart),
+        guard week.hasValidStructure, let start = calendar.date(from: week.weekStart),
               calendar.dayKey(for: calendar.weekStart(containing: start)) == week.weekStart,
               Set(week.workouts.map(\.id)).count == week.workouts.count,
               Set(week.workouts.map(\.plannedDate)).count == week.workouts.count,
@@ -632,7 +812,7 @@ final class WorkoutStore {
     @discardableResult
     func mergeHistory(_ sessions: [WorkoutSession]) -> Bool {
         guard sessions.allSatisfy({ $0.finishedAt != nil && $0.completedSets > 0 && !$0.exercises.isEmpty &&
-            ($0.timing?.isValid(for: $0) ?? true) }) else {
+            $0.hasValidStructure && ($0.timing?.isValid(for: $0) ?? true) }) else {
             errorMessage = TrainingError.invalidArchive.localizedDescription
             return false
         }
@@ -648,7 +828,7 @@ final class WorkoutStore {
     @discardableResult
     func restoreActiveWorkout(_ state: ActiveWorkoutState?, date: Date = Date()) -> Bool {
         if let session = state?.session {
-            guard session.finishedAt == nil, !session.exercises.isEmpty,
+            guard session.finishedAt == nil, !session.exercises.isEmpty, session.hasValidStructure,
                   session.exercises.indices.contains(session.currentExercise),
                   session.timing?.isValid(for: session) ?? true,
                   !archive.history.contains(where: { $0.id == session.id }) else {

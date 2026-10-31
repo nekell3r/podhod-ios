@@ -79,7 +79,7 @@ final class SetRemovalIntentTests: XCTestCase {
         let store = WorkoutStore(fileURL: url)
         let session = try XCTUnwrap(store.archive.active)
         XCTAssertTrue(store.removeActiveSet(sessionID: session.id, exerciseID: session.exercises[0].id, setID: session.exercises[0].sets[1].id))
-        XCTAssertEqual(store.archive.version, 5)
+        XCTAssertEqual(store.archive.version, 6)
         XCTAssertEqual(try Data(contentsOf: url.deletingLastPathComponent().appendingPathComponent("training-v4-backup.json")), original)
         XCTAssertEqual(store.archive.active?.id, session.id)
     }

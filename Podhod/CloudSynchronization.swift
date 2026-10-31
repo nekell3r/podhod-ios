@@ -11,7 +11,7 @@ private struct TrainingSyncCheckpoint: Codable {
 }
 
 struct TrainingSyncConflict {
-    enum Resource { case template, week(String), active, history, protein(String) }
+    enum Resource { case template, week(String), active, history, protein(String), cycle }
     var resource: Resource
     var message: String
     var canChooseServer: Bool
@@ -35,6 +35,7 @@ final class CloudSynchronization {
     @ObservationIgnored private var checkpointError: String?
     @ObservationIgnored private var lastCheckpointData: Data?
     @ObservationIgnored private var lastHistoryRead: Date?
+    @ObservationIgnored private var lastCycleRead: Date?
     @ObservationIgnored private let fileURL: URL
 
     init(store: WorkoutStore, auth: CloudAuthentication, protein: ProteinTracker) {
@@ -62,7 +63,9 @@ final class CloudSynchronization {
     }
 
     private var hasLocalChanges: Bool {
-        if !same(store.archive.week, checkpoint.template?.days) { return true }
+        if !same(store.archive.week, checkpoint.template?.days) ||
+            (store.archive.templateStructureVersion ?? 0) != (checkpoint.template?.structureVersion ?? 0) { return true }
+        if store.cycleState.pending != nil || store.cycleState.conflict != nil { return true }
         if !same(store.activeWorkoutState, checkpoint.active?.state) { return true }
         if store.archive.history.contains(where: { !checkpoint.historyIDs.contains($0.id) }) { return true }
         if protein.days.contains(where: { local in
@@ -71,7 +74,8 @@ final class CloudSynchronization {
         }) { return true }
         return (store.archive.scheduledWeeks ?? []).contains { local in
             guard let known = checkpoint.weeks.first(where: { $0.weekStart == local.weekStart }) else { return true }
-            return !same(local.workouts, known.workouts) || local.timezone != known.timezone
+            return !same(local.workouts, known.workouts) || local.timezone != known.timezone ||
+                (local.structureVersion ?? 0) != (known.structureVersion ?? 0)
         }
     }
 
@@ -80,6 +84,7 @@ final class CloudSynchronization {
         isSyncing = true
         defer { isSyncing = false }
         let api = TrainingCloudAPI(auth: auth)
+        var currentResource: TrainingSyncConflict.Resource?
         do {
             let profile = try await api.profile()
             if accountDiscovered?(profile.id) == true { return }
@@ -96,19 +101,26 @@ final class CloudSynchronization {
                 try await synchronizeHistory(api)
             }
             guard conflict == nil else { return }
+            currentResource = .cycle
+            try await synchronizeCycle(api)
+            guard conflict == nil else { return }
             let localTemplateAtStart = store.archive.week
+            currentResource = .template
             try await synchronizeTemplate(api)
             guard conflict == nil else { return }
             let currentWeek = store.trainingCalendar.dayKey(for: store.trainingCalendar.weekStart(containing: Date()))
             let weeks = (store.archive.scheduledWeeks ?? []).filter { week in
                 if week.weekStart == currentWeek || week.weekStart == focusedWeekStart { return true }
                 guard let known = checkpoint.weeks.first(where: { $0.weekStart == week.weekStart }) else { return true }
-                return !same(week.workouts, known.workouts) || week.timezone != known.timezone
+                return !same(week.workouts, known.workouts) || week.timezone != known.timezone ||
+                    (week.structureVersion ?? 0) != (known.structureVersion ?? 0)
             }
             for week in weeks {
+                currentResource = .week(week.weekStart)
                 try await synchronizeWeek(week.weekStart, template: localTemplateAtStart, api: api)
                 if conflict != nil { return }
             }
+            currentResource = .active
             try await synchronizeActive(api)
             guard conflict == nil else { return }
             if !protein.loadFailed {
@@ -118,6 +130,7 @@ final class CloudSynchronization {
                 }.map(\.date))
                 dates.insert(protein.day(on: Date()).date)
                 for key in dates.sorted() {
+                    currentResource = .protein(key)
                     try await synchronizeProteinDay(key, api: api)
                     if conflict != nil { return }
                 }
@@ -127,7 +140,8 @@ final class CloudSynchronization {
                 message = "Синхронизировано"
             }
         } catch let failure as TrainingCloudFailure where failure.status == 409 {
-            if failure.code == "upgrade_required" || failure.code == "set_removal_conflict" {
+            if case .active? = currentResource,
+               failure.code == "upgrade_required" || failure.code == "set_removal_conflict" || failure.code == "superset_conflict" {
                 do {
                     let remote = try await api.active()
                     try saveConflictBackup(remote: remote)
@@ -137,6 +151,8 @@ final class CloudSynchronization {
                 } catch {
                     message = "Локальные записи сохранены. Не удалось проверить конфликт подходов."
                 }
+            } else if failure.code == "upgrade_required" {
+                message = "Обнови приложение, чтобы сохранить новую структуру цикла или тренировки. Локальные записи сохранены."
             } else {
                 message = "Состояние изменилось на сервере. Проверяем изменения…"
             }
@@ -161,7 +177,8 @@ final class CloudSynchronization {
         for session in store.archive.history where !known.contains(session.id) {
             do {
                 try await api.saveHistory(session, removedSetIDs: store.removedSetIDs(for: session))
-            } catch let failure as TrainingCloudFailure where failure.code == "set_removal_conflict" || failure.code == "upgrade_required" {
+            } catch let failure as TrainingCloudFailure where failure.code == "set_removal_conflict" ||
+                failure.code == "upgrade_required" || failure.code == "superset_conflict" {
                 let active = try await api.active()
                 try saveConflictBackup(remote: active)
                 conflict = TrainingSyncConflict(resource: .history,
@@ -177,28 +194,62 @@ final class CloudSynchronization {
         try persistCheckpoint()
     }
 
+    private func synchronizeCycle(_ api: TrainingCloudAPI) async throws {
+        if store.cycleState.conflict == nil, let pending = store.cycleState.pending {
+            do {
+                let remote = try await api.saveTrainingCycle(pending)
+                var state = store.cycleState
+                try state.acknowledge(requestID: pending.requestID, record: remote)
+                try requireSaved(store.saveCycleState(state))
+            } catch let failure as TrainingCloudFailure where failure.status == 409 && failure.code != "upgrade_required" {
+                let remote = try await api.trainingCycle()
+                var state = store.cycleState
+                try state.reject(requestID: pending.requestID, remote: remote)
+                try requireSaved(store.saveCycleState(state))
+            }
+        }
+        if store.cycleState.conflict == nil, Date().timeIntervalSince(lastCycleRead ?? .distantPast) >= 30 {
+            let remote = try await api.trainingCycle()
+            var state = store.cycleState
+            try state.receive(remote)
+            try requireSaved(store.saveCycleState(state))
+            lastCycleRead = Date()
+        }
+        if store.cycleState.conflict != nil {
+            conflict = TrainingSyncConflict(resource: .cycle,
+                message: "Цикл изменён на iPhone и сервере. Обе версии сохранены. Выбор не переписывает уже созданные недели и историю.",
+                canChooseServer: true, canChooseLocal: true)
+        }
+    }
+
     private func synchronizeTemplate(_ api: TrainingCloudAPI) async throws {
         let local = store.archive.week
         let remote = try await api.template()
         if same(local, remote.days) {
-            checkpoint.template = remote
-        } else if let known = checkpoint.template {
-            if same(local, known.days) {
+            if store.archive.templateStructureVersion == 1 && remote.structureVersion != 1 {
+                checkpoint.template = try await api.saveTemplate(local, revision: remote.revision, structureVersion: 1)
+            } else {
                 guard same(store.archive.week, local) else { return }
-                try requireSaved(store.replaceTemplate(remote.days))
+                try requireSaved(store.replaceTemplate(remote.days, structureVersion: remote.structureVersion))
+                checkpoint.template = remote
+            }
+        } else if let known = checkpoint.template {
+            if same(local, known.days) && (store.archive.templateStructureVersion ?? 0) == (known.structureVersion ?? 0) {
+                guard same(store.archive.week, local) else { return }
+                try requireSaved(store.replaceTemplate(remote.days, structureVersion: remote.structureVersion))
                 checkpoint.template = remote
             } else if remote.revision == known.revision {
-                checkpoint.template = try await api.saveTemplate(local, revision: remote.revision)
+                checkpoint.template = try await api.saveTemplate(local, revision: remote.revision, structureVersion: store.archive.templateStructureVersion)
             } else {
                 conflict = TrainingSyncConflict(resource: .template,
                     message: "Шаблон недели изменён и на iPhone, и на сервере. Выбери, какую версию использовать.",
                     canChooseServer: true, canChooseLocal: true)
             }
         } else if remote.revision == 0 {
-            checkpoint.template = try await api.saveTemplate(local, revision: 0)
+            checkpoint.template = try await api.saveTemplate(local, revision: 0, structureVersion: store.archive.templateStructureVersion)
         } else if local.allSatisfy({ $0.exercises.isEmpty }) {
             guard same(store.archive.week, local) else { return }
-            try requireSaved(store.replaceTemplate(remote.days))
+            try requireSaved(store.replaceTemplate(remote.days, structureVersion: remote.structureVersion))
             checkpoint.template = remote
         } else {
             conflict = TrainingSyncConflict(resource: .template,
@@ -214,9 +265,16 @@ final class CloudSynchronization {
         let known = checkpoint.weeks.first { $0.weekStart == key }
         var acknowledged: TrainingWeek?
         if same(local.workouts, remote.workouts) && local.timezone == remote.timezone {
-            acknowledged = remote
+            if local.structureVersion == 1 && remote.structureVersion != 1 {
+                acknowledged = try await api.saveWeek(local, revision: remote.revision)
+            } else {
+                guard same(store.archive.scheduledWeeks?.first(where: { $0.weekStart == key }), local) else { return }
+                if local.structureVersion != remote.structureVersion { try requireSaved(store.replaceScheduledWeek(remote)) }
+                acknowledged = remote
+            }
         } else if let known {
-            if same(local.workouts, known.workouts) && local.timezone == known.timezone {
+            if same(local.workouts, known.workouts) && local.timezone == known.timezone &&
+                (local.structureVersion ?? 0) == (known.structureVersion ?? 0) {
                 guard same(store.archive.scheduledWeeks?.first(where: { $0.weekStart == key }), local) else { return }
                 try requireSaved(store.replaceScheduledWeek(remote))
                 acknowledged = remote
@@ -344,7 +402,8 @@ final class CloudSynchronization {
         let expected = TrainingWeek(containing: start, template: template, calendar: calendar)
         guard expected.workouts.count == week.workouts.count else { return false }
         return week.workouts.allSatisfy { workout in
-            expected.workouts.contains { $0.plannedDate == workout.plannedDate && $0.title == workout.title && $0.exercises == workout.exercises }
+            expected.workouts.contains { $0.plannedDate == workout.plannedDate && $0.title == workout.title && $0.exercises == workout.exercises &&
+                    $0.context == workout.context && $0.supersets == workout.supersets }
         }
     }
 
@@ -365,6 +424,7 @@ final class CloudSynchronization {
         let weeksBefore = store.archive.scheduledWeeks ?? []
         let activeBefore = store.activeWorkoutState
         let proteinBefore = protein.days
+        let cycleBefore = store.cycleState.document
         do {
             let profile = try await api.profile()
             guard checkpoint.accountID == profile.id else {
@@ -381,7 +441,7 @@ final class CloudSynchronization {
                     return
                 }
                 try saveConflictBackup(remote: remote)
-                if useServer { try requireSaved(store.replaceTemplate(remote.days)) }
+                if useServer { try requireSaved(store.replaceTemplate(remote.days, structureVersion: remote.structureVersion)) }
                 checkpoint.template = remote
             case .week(let key):
                 let remote = try await api.week(key, timezone: store.trainingCalendar.calendar.timeZone.identifier)
@@ -409,6 +469,24 @@ final class CloudSynchronization {
                 try saveConflictBackup(remote: remote)
                 if useServer { try requireSaved(store.restoreActiveWorkout(remote.state)) }
                 checkpoint.active = remote
+            case .cycle:
+                let remote = try await api.trainingCycle()
+                if useServer && store.cycleState.document != cycleBefore {
+                    message = "Цикл изменился на iPhone. Проверь версии ещё раз."
+                    isSyncing = false
+                    return
+                }
+                var state = store.cycleState
+                guard state.conflict == remote else {
+                    try state.receive(remote)
+                    try requireSaved(store.saveCycleState(state))
+                    message = "Цикл изменился на сервере. Проверь актуальные версии ещё раз."
+                    isSyncing = false
+                    return
+                }
+                try store.backupCycleConflict(remote: remote)
+                try state.resolve(usingServer: useServer, expected: remote)
+                try requireSaved(store.saveCycleState(state))
             case .protein(let key):
                 let remote = try await api.proteinDay(key)
                 if useServer && !same(protein.days.first(where: { $0.date == key }), proteinBefore.first(where: { $0.date == key })) {

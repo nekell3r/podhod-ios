@@ -30,21 +30,42 @@ struct TrainingCloudAPI {
     }
 
     func template() async throws -> TrainingTemplateRecord {
-        try await request("GET", path: "v1/template")
+        let record: TrainingTemplateRecord = try await request("GET", path: "v1/template")
+        guard record.hasValidStructure else { throw TrainingError.unsupportedArchive }
+        return record
     }
 
-    func saveTemplate(_ days: [TrainingDay], revision: Int64) async throws -> TrainingTemplateRecord {
-        struct Change: Encodable { var expectedRevision: Int64; var requestID = UUID(); var days: [TrainingDay] }
-        return try await request("PUT", path: "v1/template", body: Self.encode(Change(expectedRevision: revision, days: days)))
+    func saveTemplate(_ days: [TrainingDay], revision: Int64, structureVersion: Int?) async throws -> TrainingTemplateRecord {
+        struct Change: Encodable {
+            var expectedRevision: Int64; var requestID = UUID(); var days: [TrainingDay]; var structureVersion: Int?
+        }
+        return try await request("PUT", path: "v1/template",
+            body: Self.encode(Change(expectedRevision: revision, days: days, structureVersion: structureVersion)))
     }
 
     func week(_ key: String, timezone: String) async throws -> TrainingWeek {
-        try await request("GET", path: "v1/weeks/\(key)", query: [URLQueryItem(name: "timezone", value: timezone)])
+        let record: TrainingWeek = try await request("GET", path: "v1/weeks/\(key)", query: [URLQueryItem(name: "timezone", value: timezone)])
+        guard record.weekStart == key, record.hasValidStructure else { throw TrainingError.unsupportedArchive }
+        return record
     }
 
     func saveWeek(_ week: TrainingWeek, revision: Int64) async throws -> TrainingWeek {
-        struct Change: Encodable { var expectedRevision: Int64; var requestID = UUID(); var timezone: String; var workouts: [ScheduledWorkout] }
-        return try await request("PUT", path: "v1/weeks/\(week.weekStart)", body: Self.encode(Change(expectedRevision: revision, timezone: week.timezone, workouts: week.workouts)))
+        struct Change: Encodable {
+            var expectedRevision: Int64; var requestID = UUID(); var timezone: String
+            var workouts: [ScheduledWorkout]; var structureVersion: Int?
+        }
+        return try await request("PUT", path: "v1/weeks/\(week.weekStart)", body: Self.encode(Change(
+            expectedRevision: revision, timezone: week.timezone, workouts: week.workouts, structureVersion: week.structureVersion)))
+    }
+
+    func trainingCycle() async throws -> RevisionedDocumentRecord<TrainingCycleDocument> {
+        let record: RevisionedDocumentRecord<TrainingCycleDocument> = try await request("GET", path: "v1/cycle")
+        guard record.revision >= 0, record.document.isValid else { throw TrainingError.unsupportedArchive }
+        return record
+    }
+
+    func saveTrainingCycle(_ change: PendingDocumentWrite<TrainingCycleDocument>) async throws -> RevisionedDocumentRecord<TrainingCycleDocument> {
+        try await request("PUT", path: "v1/cycle", body: Self.encode(change))
     }
 
     func history() async throws -> [WorkoutSession] {
@@ -84,41 +105,41 @@ struct TrainingCloudAPI {
             expectedRevision: revision, morningTakenAt: day.morningTakenAt, eveningTakenAt: day.eveningTakenAt)))
     }
 
-    func nutritionDay(_ key: String, timezone: String) async throws -> NutritionDocumentRecord<NutritionDayDocument> {
-        let record: NutritionDocumentRecord<NutritionDayDocument> = try await request("GET", path: "v1/nutrition/days/\(key)",
+    func nutritionDay(_ key: String, timezone: String) async throws -> RevisionedDocumentRecord<NutritionDayDocument> {
+        let record: RevisionedDocumentRecord<NutritionDayDocument> = try await request("GET", path: "v1/nutrition/days/\(key)",
             query: [URLQueryItem(name: "timezone", value: timezone)])
         guard record.document.date == key else { throw NutritionDiaryError.invalidResponse }
         return record
     }
 
-    func saveNutritionDay(_ change: NutritionPendingWrite<NutritionDayDocument>) async throws -> NutritionDocumentRecord<NutritionDayDocument> {
-        let record: NutritionDocumentRecord<NutritionDayDocument> = try await request("PUT",
+    func saveNutritionDay(_ change: PendingDocumentWrite<NutritionDayDocument>) async throws -> RevisionedDocumentRecord<NutritionDayDocument> {
+        let record: RevisionedDocumentRecord<NutritionDayDocument> = try await request("PUT",
             path: "v1/nutrition/days/\(change.document.date)", body: Self.encode(change))
         guard record.document.date == change.document.date else { throw NutritionDiaryError.invalidResponse }
         return record
     }
 
-    func nutritionGoals() async throws -> NutritionDocumentRecord<NutritionGoalsDocument> {
+    func nutritionGoals() async throws -> RevisionedDocumentRecord<NutritionGoalsDocument> {
         try await request("GET", path: "v1/nutrition/goals")
     }
 
-    func saveNutritionGoals(_ change: NutritionPendingWrite<NutritionGoalsDocument>) async throws -> NutritionDocumentRecord<NutritionGoalsDocument> {
+    func saveNutritionGoals(_ change: PendingDocumentWrite<NutritionGoalsDocument>) async throws -> RevisionedDocumentRecord<NutritionGoalsDocument> {
         try await request("PUT", path: "v1/nutrition/goals", body: Self.encode(change))
     }
 
-    func nutritionRecipes() async throws -> NutritionDocumentRecord<NutritionRecipesDocument> {
+    func nutritionRecipes() async throws -> RevisionedDocumentRecord<NutritionRecipesDocument> {
         try await request("GET", path: "v1/nutrition/recipes")
     }
 
-    func saveNutritionRecipes(_ change: NutritionPendingWrite<NutritionRecipesDocument>) async throws -> NutritionDocumentRecord<NutritionRecipesDocument> {
+    func saveNutritionRecipes(_ change: PendingDocumentWrite<NutritionRecipesDocument>) async throws -> RevisionedDocumentRecord<NutritionRecipesDocument> {
         try await request("PUT", path: "v1/nutrition/recipes", body: Self.encode(change))
     }
 
-    func nutritionPreferences() async throws -> NutritionDocumentRecord<NutritionPreferencesDocument> {
+    func nutritionPreferences() async throws -> RevisionedDocumentRecord<NutritionPreferencesDocument> {
         try await request("GET", path: "v1/nutrition/preferences")
     }
 
-    func saveNutritionPreferences(_ change: NutritionPendingWrite<NutritionPreferencesDocument>) async throws -> NutritionDocumentRecord<NutritionPreferencesDocument> {
+    func saveNutritionPreferences(_ change: PendingDocumentWrite<NutritionPreferencesDocument>) async throws -> RevisionedDocumentRecord<NutritionPreferencesDocument> {
         try await request("PUT", path: "v1/nutrition/preferences", body: Self.encode(change))
     }
 

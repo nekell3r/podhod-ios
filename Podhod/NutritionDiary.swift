@@ -237,5 +237,5 @@ struct NutritionExportRange {
 struct NutritionDiaryExport: Encodable {
     let version = 1
     var source: String
-    var days: [NutritionDocumentRecord<NutritionDayDocument>]
+    var days: [RevisionedDocumentRecord<NutritionDayDocument>]
 }

@@ -8,12 +8,33 @@ struct WorkoutCompositionView: View {
     @State private var showAdd = false
     @State private var replacing: SessionExercise?
     @State private var detail: Exercise?
+    @State private var groupingSession: WorkoutSession?
+    @State private var dissolving: SessionSuperset?
 
     var body: some View {
         NavigationStack {
             Group {
                 if let session = store.archive.active, session.id == sessionID {
                     List {
+                        Section {
+                            ForEach(session.supersets ?? []) { group in
+                                VStack(alignment: .leading, spacing: 9) {
+                                    Text(group.exerciseIDs.compactMap { id in session.exercises.first { $0.id == id }?.exercise.name }.joined(separator: " → "))
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(group.isClosed ? "Группа закрыта · выполненные связи сохранены" : "Кругов: \(group.rounds.count) · отдых \(group.restSeconds) с")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    if !group.isClosed {
+                                        Button("Добавить круг") { store.addSupersetRound(sessionID: sessionID, expected: group) }
+                                            .buttonStyle(.borderless).frame(minHeight: 44, alignment: .leading)
+                                        Button("Распустить суперсет", role: .destructive) { dissolving = group }
+                                            .buttonStyle(.borderless).frame(minHeight: 44, alignment: .leading)
+                                    }
+                                }.padding(.vertical, 5)
+                            }
+                            Button("Новый суперсет", systemImage: "link") { groupingSession = session }
+                                .disabled(session.exercises.filter { !$0.isResolved }.count < 2)
+                        } header: { Text("Суперсеты") }
+                        footer: { Text("Упражнения выполняются по порядку, отдых — после круга. Роспуск сохраняет выполненные связи и все черновики; оставшееся выполняется отдельно.") }
                         Section {
                             ForEach(session.exercises) { item in
                                 let layout = dynamicTypeSize.isAccessibilitySize
@@ -93,6 +114,15 @@ struct WorkoutCompositionView: View {
                 WorkoutExercisePicker(store: store, sessionID: sessionID, replacing: original)
             }
             .sheet(item: $detail) { ExerciseDetailView(exercise: $0) }
+            .sheet(item: $groupingSession) { WorkoutSupersetPicker(store: store, session: $0) }
+            .confirmationDialog("Распустить суперсет?", isPresented: Binding(get: { dissolving != nil }, set: { if !$0 { dissolving = nil } }),
+                                titleVisibility: .visible, presenting: dissolving) { group in
+                Button("Распустить", role: .destructive) {
+                    store.closeActiveSuperset(sessionID: sessionID, expected: group)
+                    dissolving = nil
+                }
+                Button("Отмена", role: .cancel) { dissolving = nil }
+            } message: { _ in Text("Выполненные связи и введённые значения сохранятся. Невыполненные подходы останутся отдельно в своих упражнениях.") }
             .alert("Не удалось изменить тренировку", isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })) {
                 Button("Понятно") { store.errorMessage = nil }
             } message: { Text(store.errorMessage ?? "") }
@@ -100,6 +130,66 @@ struct WorkoutCompositionView: View {
         #if os(macOS)
         .frame(minWidth: 430, minHeight: 650)
         #endif
+    }
+}
+
+private struct WorkoutSupersetPicker: View {
+    var store: WorkoutStore
+    let session: WorkoutSession
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: [UUID] = []
+    @State private var rest = 90
+    @State private var error: String?
+
+    private var available: [SessionExercise] {
+        let members = Set((session.supersets ?? []).filter { !$0.isClosed }.flatMap(\.exerciseIDs))
+        return session.exercises.filter { !$0.isResolved && !members.contains($0.id) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    ForEach(available) { exercise in
+                        Button {
+                            if selected.contains(exercise.id) { selected.removeAll { $0 == exercise.id } }
+                            else if selected.count < 4 { selected.append(exercise.id) }
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(exercise.exercise.name).foregroundStyle(.primary)
+                                    Text("Осталось подходов: \(exercise.sets.filter { !$0.isCompleted }.count)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if let order = selected.firstIndex(of: exercise.id) { Text("\(order + 1)").foregroundStyle(Color.gymLime) }
+                                else { Image(systemName: "circle").foregroundStyle(.secondary) }
+                            }.frame(minHeight: 44)
+                        }
+                    }
+                    if available.count < 2 { Text("Нет двух свободных упражнений с незавершёнными подходами.").foregroundStyle(.secondary) }
+                } header: { Text("Выбери 2–4 участника по порядку") }
+                footer: { Text("Нужно одинаковое число оставшихся подходов. Уже выполненные останутся самостоятельными. При изменении тренировки открой выбор заново.") }
+                Section { Stepper("Отдых после круга: \(rest) с", value: $rest, in: 0...600, step: 15) }
+            }
+            .navigationTitle("Новый суперсет")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Объединить") {
+                        let cards = selected.compactMap { id in available.first { $0.id == id } }
+                        if store.createActiveSuperset(sessionID: session.id, expectedExercises: cards, restSeconds: rest) { dismiss() }
+                        else { error = store.errorMessage; store.errorMessage = nil }
+                    }.disabled(!(2...4).contains(selected.count))
+                }
+            }
+            .alert("Проверь суперсет", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("Понятно") { error = nil }
+            } message: { Text(error ?? "") }
+        }.tint(.gymLime).preferredColorScheme(.dark)
     }
 }
 

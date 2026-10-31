@@ -74,18 +74,18 @@ final class NutritionDiaryTests: XCTestCase {
     }
 
     func testPendingRetryIsIdenticalAcrossEditsAndRelaunch() throws {
-        var state = NutritionDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["first"]))
+        var state = RevisionedDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["first"]))
         let original = try XCTUnwrap(state.pending)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let originalBytes = try encoder.encode(original)
         state.edit(NutritionPreferencesDocument(favoriteFoodIDs: ["second"]))
-        let recovered = try JSONDecoder().decode(NutritionDocumentState<NutritionPreferencesDocument>.self,
+        let recovered = try JSONDecoder().decode(RevisionedDocumentState<NutritionPreferencesDocument>.self,
             from: JSONEncoder().encode(state))
         XCTAssertEqual(recovered.pending, original)
         XCTAssertEqual(try encoder.encode(try XCTUnwrap(recovered.pending)), originalBytes)
         try state.acknowledge(requestID: original.requestID,
-            record: NutritionDocumentRecord(revision: 1, document: original.document))
+            record: RevisionedDocumentRecord(revision: 1, document: original.document))
         let next = try XCTUnwrap(state.pending)
         XCTAssertEqual(next.expectedRevision, 1)
         XCTAssertNotEqual(next.requestID, original.requestID)
@@ -95,27 +95,27 @@ final class NutritionDiaryTests: XCTestCase {
 
     func testAcknowledgingOldRequestDoesNotResurrectDeletedData() throws {
         let populated = NutritionPreferencesDocument(favoriteFoodIDs: ["first"])
-        var state = NutritionDocumentState(localDocument: populated)
+        var state = RevisionedDocumentState(localDocument: populated)
         let original = try XCTUnwrap(state.pending)
         state.edit(NutritionPreferencesDocument())
-        try state.acknowledge(requestID: original.requestID, record: NutritionDocumentRecord(revision: 1, document: populated))
+        try state.acknowledge(requestID: original.requestID, record: RevisionedDocumentRecord(revision: 1, document: populated))
         let deletion = try XCTUnwrap(state.pending)
         try state.acknowledge(requestID: deletion.requestID,
-            record: NutritionDocumentRecord(revision: 2, document: NutritionPreferencesDocument()))
-        try state.acknowledge(requestID: original.requestID, record: NutritionDocumentRecord(revision: 1, document: populated))
-        try state.receive(NutritionDocumentRecord(revision: 1, document: populated))
+            record: RevisionedDocumentRecord(revision: 2, document: NutritionPreferencesDocument()))
+        try state.acknowledge(requestID: original.requestID, record: RevisionedDocumentRecord(revision: 1, document: populated))
+        try state.receive(RevisionedDocumentRecord(revision: 1, document: populated))
         XCTAssertEqual(state.acknowledged?.revision, 2)
         XCTAssertTrue(state.document.favoriteFoodIDs.isEmpty)
         XCTAssertNil(state.pending)
     }
 
     func testStaleReceiptKeepsNewerConflictAndLocalEdits() throws {
-        var state = NutritionDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["first"]))
+        var state = RevisionedDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["first"]))
         let original = try XCTUnwrap(state.pending)
         state.edit(NutritionPreferencesDocument(favoriteFoodIDs: ["latest local"]))
-        let latest = NutritionDocumentRecord(revision: 8, document: NutritionPreferencesDocument())
+        let latest = RevisionedDocumentRecord(revision: 8, document: NutritionPreferencesDocument())
         try state.receive(latest)
-        try state.acknowledge(requestID: original.requestID, record: NutritionDocumentRecord(revision: 1, document: original.document))
+        try state.acknowledge(requestID: original.requestID, record: RevisionedDocumentRecord(revision: 1, document: original.document))
         XCTAssertEqual(state.conflict, latest)
         XCTAssertEqual(state.document.favoriteFoodIDs, ["latest local"])
         XCTAssertNil(state.pending)
@@ -123,15 +123,15 @@ final class NutritionDiaryTests: XCTestCase {
 
     func testConcurrentChangesRequireExplicitChoiceAndNewRequestID() throws {
         let empty = NutritionPreferencesDocument()
-        var state = NutritionDocumentState(document: empty)
-        try state.receive(NutritionDocumentRecord(revision: 4, document: empty))
+        var state = RevisionedDocumentState(document: empty)
+        try state.receive(RevisionedDocumentRecord(revision: 4, document: empty))
         state.edit(NutritionPreferencesDocument(favoriteRecipeIDs: ["local"]))
         let pending = try XCTUnwrap(state.pending)
-        let remote = NutritionDocumentRecord(revision: 5, document: NutritionPreferencesDocument(favoriteRecipeIDs: ["server"]))
+        let remote = RevisionedDocumentRecord(revision: 5, document: NutritionPreferencesDocument(favoriteRecipeIDs: ["server"]))
         try state.receive(remote)
         XCTAssertEqual(state.document.favoriteRecipeIDs, ["local"])
         XCTAssertEqual(state.conflict, remote)
-        XCTAssertThrowsError(try state.resolve(usingServer: false, expected: NutritionDocumentRecord(revision: 4, document: empty)))
+        XCTAssertThrowsError(try state.resolve(usingServer: false, expected: RevisionedDocumentRecord(revision: 4, document: empty)))
         try state.resolve(usingServer: false, expected: remote)
         XCTAssertNil(state.conflict)
         XCTAssertEqual(state.pending?.expectedRevision, 5)
@@ -151,7 +151,7 @@ final class NutritionDiaryTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(loaded.archive.days.first).document.entries.isEmpty)
         XCTAssertEqual(loaded.archive.days.first?.pending, pending)
         XCTAssertTrue(loaded.acknowledgeDay(requestID: pending.requestID,
-            record: NutritionDocumentRecord(revision: 1, document: pending.document)))
+            record: RevisionedDocumentRecord(revision: 1, document: pending.document)))
         XCTAssertTrue(try XCTUnwrap(loaded.archive.days.first?.pending).document.entries.isEmpty)
         XCTAssertEqual(loaded.archive.days.first?.pending?.expectedRevision, 1)
         XCTAssertEqual(NutritionDiaryStore(fileURL: url).archive, loaded.archive)
@@ -161,7 +161,7 @@ final class NutritionDiaryTests: XCTestCase {
         let store = NutritionDiaryStore(fileURL: location())
         let key = "2026-10-31"
         let absent = NutritionDayDocument(date: key, timezone: "UTC")
-        XCTAssertTrue(store.receiveDay(NutritionDocumentRecord(revision: 0, document: absent)))
+        XCTAssertTrue(store.receiveDay(RevisionedDocumentRecord(revision: 0, document: absent)))
         let goal = NutritionGoal(effectiveFrom: key, timezone: "Europe/Moscow", target: target)
         XCTAssertTrue(store.saveGoal(goal))
         XCTAssertTrue(store.saveEntry(entry(), on: key, timezone: "Europe/Moscow"))
@@ -190,7 +190,7 @@ final class NutritionDiaryTests: XCTestCase {
         XCTAssertTrue(store.saveGoal(NutritionGoal(effectiveFrom: key, timezone: "UTC", target: target)))
         XCTAssertNil(store.day(key, timezone: "UTC").goal)
         XCTAssertTrue(store.acknowledgeDay(requestID: pending.requestID,
-            record: NutritionDocumentRecord(revision: 1, document: pending.document)))
+            record: RevisionedDocumentRecord(revision: 1, document: pending.document)))
         XCTAssertNil(store.day(key, timezone: "UTC").goal)
     }
 
@@ -198,7 +198,7 @@ final class NutritionDiaryTests: XCTestCase {
         let url = location()
         let store = NutritionDiaryStore(fileURL: url)
         XCTAssertTrue(store.saveEntry(entry(), on: "2026-10-31", timezone: "Europe/Moscow"))
-        let remote = NutritionDocumentRecord(revision: 2, document: NutritionDayDocument(date: "2026-10-31", timezone: "UTC"))
+        let remote = RevisionedDocumentRecord(revision: 2, document: NutritionDayDocument(date: "2026-10-31", timezone: "UTC"))
         XCTAssertTrue(store.receiveDay(remote))
         XCTAssertFalse(store.resolveDay("2026-10-31", usingServer: false, expected: remote))
         XCTAssertTrue(store.resolveDay("2026-10-31", usingServer: true, expected: remote))
@@ -249,9 +249,9 @@ final class NutritionDiaryTests: XCTestCase {
     }
 
     func testRejectedRequestAtSameRevisionStillNeedsExplicitChoice() throws {
-        var state = NutritionDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["local"]))
+        var state = RevisionedDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["local"]))
         let pending = try XCTUnwrap(state.pending)
-        let remote = NutritionDocumentRecord(revision: 0, document: NutritionPreferencesDocument())
+        let remote = RevisionedDocumentRecord(revision: 0, document: NutritionPreferencesDocument())
         try state.reject(requestID: pending.requestID, remote: remote)
         XCTAssertEqual(state.conflict, remote)
         XCTAssertEqual(state.pending, pending)
@@ -285,8 +285,8 @@ final class NutritionDiaryTests: XCTestCase {
         XCTAssertEqual(store.archive.preferences.pending?.document.favoriteFoodIDs, ["usda-171413"])
         let pending = try XCTUnwrap(store.archive.preferences.pending)
         XCTAssertTrue(store.acknowledge(requestID: pending.requestID,
-            record: NutritionDocumentRecord(revision: 1, document: pending.document), at: \.preferences))
-        XCTAssertTrue(store.receive(NutritionDocumentRecord(revision: 2,
+            record: RevisionedDocumentRecord(revision: 1, document: pending.document), at: \.preferences))
+        XCTAssertTrue(store.receive(RevisionedDocumentRecord(revision: 2,
             document: NutritionPreferencesDocument(favoriteRecipeIDs: ["from another device"])), at: \.preferences))
         XCTAssertTrue(preferences.favoriteFoodIDs.isEmpty)
         XCTAssertEqual(preferences.favoriteRecipeIDs, ["from another device"])
@@ -345,12 +345,12 @@ final class NutritionDiaryTests: XCTestCase {
     }
 
     @MainActor func testMissingPendingForDirtyCheckpointIsProtectedAsCorrupt() throws {
-        var state = NutritionDocumentState(document: NutritionPreferencesDocument())
-        try state.receive(NutritionDocumentRecord(revision: 2, document: NutritionPreferencesDocument()))
+        var state = RevisionedDocumentState(document: NutritionPreferencesDocument())
+        try state.receive(RevisionedDocumentRecord(revision: 2, document: NutritionPreferencesDocument()))
         state.edit(NutritionPreferencesDocument(favoriteFoodIDs: ["local edit"]))
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
         json.removeValue(forKey: "pending")
-        let broken = try JSONDecoder().decode(NutritionDocumentState<NutritionPreferencesDocument>.self,
+        let broken = try JSONDecoder().decode(RevisionedDocumentState<NutritionPreferencesDocument>.self,
             from: JSONSerialization.data(withJSONObject: json))
         XCTAssertFalse(broken.isValid(documentIsValid: { $0.isValid }))
         var archive = NutritionDiaryArchive()
@@ -366,12 +366,12 @@ final class NutritionDiaryTests: XCTestCase {
     }
 
     func testDifferentDocumentsAtSameRevisionCannotClearConflictOnReceipt() throws {
-        var state = NutritionDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["local"]))
+        var state = RevisionedDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["local"]))
         let pending = try XCTUnwrap(state.pending)
-        let remote = NutritionDocumentRecord(revision: 1, document: NutritionPreferencesDocument(favoriteFoodIDs: ["other"]))
+        let remote = RevisionedDocumentRecord(revision: 1, document: NutritionPreferencesDocument(favoriteFoodIDs: ["other"]))
         try state.receive(remote)
         XCTAssertThrowsError(try state.acknowledge(requestID: pending.requestID,
-            record: NutritionDocumentRecord(revision: 1, document: pending.document)))
+            record: RevisionedDocumentRecord(revision: 1, document: pending.document)))
         XCTAssertEqual(state.conflict, remote)
         XCTAssertEqual(state.pending, pending)
         XCTAssertEqual(state.document.favoriteFoodIDs, ["local"])
@@ -383,10 +383,10 @@ final class NutritionDiaryTests: XCTestCase {
         XCTAssertTrue(store.saveGoal(goal))
         let goalPending = try XCTUnwrap(store.archive.goals.pending)
         XCTAssertTrue(store.acknowledge(requestID: goalPending.requestID,
-            record: NutritionDocumentRecord(revision: 1, document: goalPending.document), at: \.goals))
+            record: RevisionedDocumentRecord(revision: 1, document: goalPending.document), at: \.goals))
         var newerGoal = goal
         newerGoal.target = NutritionFacts(energyKcal: 2200, proteinGrams: 120, fatGrams: 80, carbohydrateGrams: 230)
-        XCTAssertTrue(store.receive(NutritionDocumentRecord(revision: 2,
+        XCTAssertTrue(store.receive(RevisionedDocumentRecord(revision: 2,
             document: NutritionGoalsDocument(goals: [newerGoal])), at: \.goals))
         XCTAssertFalse(store.removeGoal(goal.id, expected: goal))
         XCTAssertEqual(store.archive.goals.document.goals, [newerGoal])
@@ -395,10 +395,10 @@ final class NutritionDiaryTests: XCTestCase {
         XCTAssertTrue(store.saveRecipe(recipe))
         let recipePending = try XCTUnwrap(store.archive.recipes.pending)
         XCTAssertTrue(store.acknowledge(requestID: recipePending.requestID,
-            record: NutritionDocumentRecord(revision: 1, document: recipePending.document), at: \.recipes))
+            record: RevisionedDocumentRecord(revision: 1, document: recipePending.document), at: \.recipes))
         var newerRecipe = recipe
         newerRecipe.name = "Новое название"
-        XCTAssertTrue(store.receive(NutritionDocumentRecord(revision: 2,
+        XCTAssertTrue(store.receive(RevisionedDocumentRecord(revision: 2,
             document: NutritionRecipesDocument(recipes: [newerRecipe])), at: \.recipes))
         let bytes = try Data(contentsOf: store.fileURL)
         XCTAssertFalse(store.removeRecipe(recipe.id, expected: recipe))
@@ -435,7 +435,7 @@ final class NutritionDiaryTests: XCTestCase {
         changed.grams = 20
         XCTAssertTrue(store.saveEntry(changed, on: "2026-10-31", timezone: "UTC", expected: first))
         let sent = try XCTUnwrap(store.archive.days.first?.pending)
-        let remote = NutritionDocumentRecord(revision: 1, document: NutritionDayDocument(date: "2026-10-31", timezone: "UTC"))
+        let remote = RevisionedDocumentRecord(revision: 1, document: NutritionDayDocument(date: "2026-10-31", timezone: "UTC"))
         XCTAssertTrue(store.rejectDay(requestID: sent.requestID, record: remote))
         let directory = store.fileURL.deletingLastPathComponent().appending(path: "NutritionConflicts")
         let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -466,7 +466,7 @@ final class NutritionDiaryTests: XCTestCase {
 
     @MainActor func testUnchangedServerReadDoesNotRewriteLocalArchive() throws {
         let store = NutritionDiaryStore(fileURL: location())
-        let remote = NutritionDocumentRecord(revision: 4, document: NutritionGoalsDocument())
+        let remote = RevisionedDocumentRecord(revision: 4, document: NutritionGoalsDocument())
         XCTAssertTrue(store.receive(remote, at: \.goals))
         let previous = Date(timeIntervalSince1970: 1000)
         try FileManager.default.setAttributes([.modificationDate: previous], ofItemAtPath: store.fileURL.path)
