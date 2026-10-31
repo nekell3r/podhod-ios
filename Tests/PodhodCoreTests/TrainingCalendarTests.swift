@@ -30,6 +30,7 @@ final class TrainingCalendarTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("CalendarTests-\(UUID())/training.json")
         let store = WorkoutStore(fileURL: url)
         store.loadExample()
+        let calendar = store.trainingCalendar
         let monday = try XCTUnwrap(calendar.date(from: "2026-11-02"))
         let nextMonday = try XCTUnwrap(calendar.date(from: "2026-11-09"))
         store.ensureWeek(containing: monday)
@@ -49,6 +50,7 @@ final class TrainingCalendarTests: XCTestCase {
     @MainActor func testMovePreservesIdentityAndRejectsOccupiedOrOtherWeek() async throws {
         let store = WorkoutStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalendarTests-\(UUID())/training.json"))
         store.loadExample()
+        let calendar = store.trainingCalendar
         let monday = try XCTUnwrap(calendar.date(from: "2026-11-02"))
         let tuesday = try XCTUnwrap(calendar.date(from: "2026-11-03"))
         let wednesday = try XCTUnwrap(calendar.date(from: "2026-11-04"))
@@ -69,6 +71,7 @@ final class TrainingCalendarTests: XCTestCase {
     @MainActor func testScheduledStartSnapshotsDateAndSurvivesPlanChange() async throws {
         let store = WorkoutStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalendarTests-\(UUID())/training.json"))
         store.loadExample()
+        let calendar = store.trainingCalendar
         let monday = try XCTUnwrap(calendar.date(from: "2026-11-02"))
         XCTAssertTrue(store.startScheduled(on: monday))
         let active = try XCTUnwrap(store.archive.active)

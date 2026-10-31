@@ -43,6 +43,7 @@ final class SynchronizationSafetyTests: XCTestCase {
     @MainActor func testStaleDatedEditorCannotRecreateMovedWorkout() async throws {
         let store = WorkoutStore(fileURL: location())
         store.loadExample()
+        let calendar = store.trainingCalendar
         let monday = try XCTUnwrap(calendar.date(from: "2026-11-02"))
         let tuesday = try XCTUnwrap(calendar.date(from: "2026-11-03"))
         store.ensureWeek(containing: monday)
