@@ -5,7 +5,7 @@ import UIKit
 
 struct ProteinTodayCard: View {
     @Bindable var tracker: ProteinTracker
-    @Bindable var reminders: ProteinReminders
+    @Bindable var reminders: AppNotifications
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {

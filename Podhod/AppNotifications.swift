@@ -1,9 +1,12 @@
 import Foundation
 import Observation
 import UserNotifications
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor @Observable
-final class ProteinReminders: NSObject, UNUserNotificationCenterDelegate {
+final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
     nonisolated static let notificationIDs = ["dev.podhod.protein.morning", "dev.podhod.protein.evening"]
     private(set) var enabled = false
     private(set) var isBusy = false
@@ -119,5 +122,20 @@ final class ProteinReminders: NSObject, UNUserNotificationCenterDelegate {
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler(Self.notificationIDs.contains(notification.request.identifier) ? [.banner, .list, .sound] : [])
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping () -> Void) {
+        completionHandler()
+        #if os(iOS)
+        guard response.notification.request.identifier == WorkoutRestPresentation.notificationID,
+              response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let address = response.notification.request.content.userInfo["restControlURL"] as? String else { return }
+        Task { @MainActor in
+            guard let url = URL(string: address), let request = WorkoutRestLink(url: url), request.action == .open else { return }
+            await UIApplication.shared.open(url)
+        }
+        #endif
     }
 }

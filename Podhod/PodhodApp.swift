@@ -13,9 +13,23 @@ struct PodhodApp: App {
     @State private var diary: NutritionDiaryStore
     @State private var nutritionSync: NutritionSynchronization
     @State private var bodyProgress: BodyProgressStore
-    @State private var reminders: ProteinReminders
+    @State private var reminders: AppNotifications
+    @State private var restPresentation = WorkoutRestPresentation()
     @State private var workspaces: AccountWorkspaces
     @State private var workspaceRevision = UUID()
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var restWorkspaceID: String? {
+        guard workspaces.errorMessage == nil else { return nil }
+        if auth.signedIn {
+            guard let verifiedID = auth.verifiedAccountID, verifiedID == workspaces.accountID else { return nil }
+        } else if workspaces.accountID != nil { return nil }
+        return workspaces.storageID
+    }
+
+    private var restSnapshot: WorkoutRestPresentationState? {
+        WorkoutRestPresentationState(archive: store.archive, workspaceID: restWorkspaceID)
+    }
 
     init() {
         let workspaces = AccountWorkspaces()
@@ -41,21 +55,28 @@ struct PodhodApp: App {
         _diary = State(initialValue: diary)
         _nutritionSync = State(initialValue: NutritionSynchronization(store: diary, auth: auth, accountID: workspaces.accountID))
         _bodyProgress = State(initialValue: bodyProgress)
-        _reminders = State(initialValue: ProteinReminders())
+        _reminders = State(initialValue: AppNotifications())
         _workspaces = State(initialValue: workspaces)
     }
 
     var body: some Scene {
         WindowGroup {
             RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition,
-                diary: diary, nutritionSync: nutritionSync, bodyProgress: bodyProgress)
+                diary: diary, nutritionSync: nutritionSync, bodyProgress: bodyProgress,
+                restPresentation: restPresentation, restWorkspaceID: restWorkspaceID)
                 .id(workspaceRevision)
                 .onAppear {
                     sync.accountDiscovered = { switchAccount(to: $0) }
                     if !auth.signedIn && workspaces.accountID != nil { _ = switchAccount(to: nil) }
+                    restPresentation.synchronize(restSnapshot, foreground: scenePhase == .active)
                 }
+                .onChange(of: restSnapshot) { _, state in restPresentation.synchronize(state, foreground: scenePhase == .active) }
+                .onChange(of: scenePhase) { _, phase in restPresentation.synchronize(restSnapshot, foreground: phase == .active) }
                 .onChange(of: auth.sessionID) { _, _ in
-                    if auth.signedIn { bodyProgress.retire() }
+                    if auth.signedIn {
+                        bodyProgress.retire()
+                        restPresentation.synchronize(nil, foreground: scenePhase == .active)
+                    }
                 }
                 .onChange(of: auth.signedIn) { _, signedIn in
                     if !signedIn { _ = switchAccount(to: nil) }
@@ -93,6 +114,7 @@ struct PodhodApp: App {
     private func switchAccount(to accountID: String?) -> Bool {
         if !workspaces.isLegacy && workspaces.accountID == accountID && !bodyProgress.isRetired { return false }
         bodyProgress.retire()
+        restPresentation.synchronize(nil, foreground: scenePhase == .active)
         do {
             guard !store.loadFailed, !protein.loadFailed, !nutrition.loadFailed, !diary.loadFailed,
                   !bodyProgress.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
@@ -137,11 +159,13 @@ struct RootView: View {
     @Bindable var auth: CloudAuthentication
     @Bindable var sync: CloudSynchronization
     @Bindable var protein: ProteinTracker
-    @Bindable var reminders: ProteinReminders
+    @Bindable var reminders: AppNotifications
     @Bindable var nutrition: NutritionPreferences
     @Bindable var diary: NutritionDiaryStore
     @Bindable var nutritionSync: NutritionSynchronization
     @Bindable var bodyProgress: BodyProgressStore
+    @Bindable var restPresentation: WorkoutRestPresentation
+    let restWorkspaceID: String?
     @Environment(\.scenePhase) private var scenePhase
     @State private var showAccount = false
     @State private var tab: AppTab = .today
@@ -184,12 +208,27 @@ struct RootView: View {
             #endif
         }
         #if os(iOS)
-        .fullScreenCover(isPresented: $showWorkout) { WorkoutView(store: store) }
+        .fullScreenCover(isPresented: $showWorkout) { WorkoutView(store: store, restPresentation: restPresentation) }
         #else
-        .sheet(isPresented: $showWorkout) { WorkoutView(store: store).frame(width: 430, height: 810) }
+        .sheet(isPresented: $showWorkout) { WorkoutView(store: store, restPresentation: restPresentation).frame(width: 430, height: 810) }
         #endif
         .sheet(isPresented: $showAccount) {
             CloudSettingsView(auth: auth, sync: sync)
+        }
+        .onOpenURL { url in
+            guard let request = WorkoutRestLink(url: url) else { return }
+            guard let restWorkspaceID, request.matches(workspaceID: restWorkspaceID,
+                sessionID: store.archive.active?.id, deadline: store.archive.restUntil) else {
+                store.errorMessage = "Этот таймер уже изменился или относится к другому аккаунту. Открой текущую тренировку."
+                return
+            }
+            switch request.action {
+            case .open: showWorkout = true
+            case .stop:
+                if store.stopRest(sessionID: request.sessionID, expectedDeadline: request.expectedDeadline) { showWorkout = true }
+            case .extend:
+                if store.adjustRest(sessionID: request.sessionID, expectedDeadline: request.expectedDeadline, seconds: 30) { showWorkout = true }
+            }
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }

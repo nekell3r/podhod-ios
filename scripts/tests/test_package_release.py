@@ -47,6 +47,37 @@ class ReleaseTests(unittest.TestCase):
         release.promote_release(stage, public)
         return public
 
+    def test_live_activity_requires_embedded_extension_with_same_identity_and_device_build(self):
+        extension = {
+            "CFBundleIdentifier": "dev.podhod.training.rest", "CFBundleExecutable": "PodhodRestActivity",
+            "CFBundleShortVersionString": "1.2", "CFBundleVersion": "3",
+            "CFBundleSupportedPlatforms": ["iPhoneOS"], "MinimumOSVersion": "17.0",
+            "CFBundlePackageType": "XPC!", "NSExtension": {"NSExtensionPointIdentifier": "com.apple.widgetkit-extension"},
+        }
+        root = "Payload/Podhod.app/PlugIns/PodhodRestActivity.appex/"
+        binary = b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x0100000C) + b"synthetic extension"
+        extra = {root + "Info.plist": plistlib.dumps(extension), root + "PodhodRestActivity": binary}
+        ipa = self.make_ipa("with-extension.ipa", changes={"NSSupportsLiveActivities": True}, extra=extra)
+        self.assertTrue(release.read_ipa(ipa)["NSSupportsLiveActivities"])
+        for key, value in [("CFBundleIdentifier", "dev.other.extension"), ("CFBundleVersion", "4"),
+                           ("CFBundleShortVersionString", "1.3"), ("CFBundleSupportedPlatforms", ["iPhoneSimulator"]),
+                           ("MinimumOSVersion", "18.0"), ("CFBundleExecutable", "../Podhod"),
+                           ("NSExtension", {"NSExtensionPointIdentifier": "other"}), ("NSExtension", [])]:
+            with self.subTest(key=key):
+                changed = dict(extension)
+                changed[key] = value
+                invalid = self.make_ipa("invalid-extension.ipa", changes={"NSSupportsLiveActivities": True},
+                    extra={**extra, root + "Info.plist": plistlib.dumps(changed)})
+                with self.assertRaises(ValueError):
+                    release.read_ipa(invalid)
+        for missing in [root + "Info.plist", root + "PodhodRestActivity"]:
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                release.read_ipa(self.make_ipa("missing-extension.ipa", changes={"NSSupportsLiveActivities": True},
+                    extra={key: value for key, value in extra.items() if key != missing}))
+        with self.assertRaisesRegex(ValueError, "arm64"):
+            release.read_ipa(self.make_ipa("wrong-extension-binary.ipa", changes={"NSSupportsLiveActivities": True},
+                extra={**extra, root + "PodhodRestActivity": b"not a device executable"}))
+
     def test_retains_old_versions_and_publishes_checksums(self):
         public = self.first_publication()
         old_data = (public / "Podhod-1.1-2.ipa").read_bytes()

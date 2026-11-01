@@ -7,7 +7,7 @@ struct TodayView: View {
     var openAccount: () -> Void
     var syncStatus: String
     var protein: ProteinTracker
-    var reminders: ProteinReminders
+    var reminders: AppNotifications
     @State private var showEditor = false
     @State private var showStop = false
     @State private var stoppingSession: WorkoutSession?

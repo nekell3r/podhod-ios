@@ -25,6 +25,16 @@ BUILD_PATTERN = re.compile(r"[1-9][0-9]*\Z")
 FILE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
+def validate_device_executable(archive, path):
+    try:
+        with archive.open(path) as binary:
+            header = binary.read(8)
+    except KeyError as error:
+        raise ValueError("IPA has no bundle executable") from error
+    if len(header) != 8 or header[:4] != b"\xcf\xfa\xed\xfe" or struct.unpack("<I", header[4:])[0] != 0x0100000C:
+        raise ValueError("Expected an arm64 Mach-O device executable")
+
+
 def version_key(value):
     if not isinstance(value, str) or not VERSION_PATTERN.fullmatch(value):
         raise ValueError("Version must contain two or three numeric components, for example 1.2 or 1.2.1")
@@ -76,10 +86,27 @@ def read_ipa(path):
         executable = manifests[0].removesuffix("Info.plist") + executable_name
         if executable not in names:
             raise ValueError("IPA has no app executable")
-        with archive.open(executable) as binary:
-            header = binary.read(8)
-        if len(header) != 8 or header[:4] != b"\xcf\xfa\xed\xfe" or struct.unpack("<I", header[4:])[0] != 0x0100000C:
-            raise ValueError("Expected an arm64 Mach-O device executable")
+        validate_device_executable(archive, executable)
+        extensions = [name for name in names if name.startswith(manifests[0].removesuffix("Info.plist") + "PlugIns/")
+                      and name.endswith(".appex/Info.plist")]
+        if info.get("NSSupportsLiveActivities") or extensions:
+            expected = manifests[0].removesuffix("Info.plist") + "PlugIns/PodhodRestActivity.appex/Info.plist"
+            if extensions != [expected]:
+                raise ValueError("Live Activity release must embed exactly the Podhod rest extension")
+            extension = plistlib.loads(archive.read(expected))
+            point = extension.get("NSExtension")
+            if (extension.get("CFBundleIdentifier") != BUNDLE_ID + ".rest"
+                    or extension.get("CFBundleShortVersionString") != version
+                    or extension.get("CFBundleVersion") != build
+                    or extension.get("CFBundleSupportedPlatforms") != ["iPhoneOS"]
+                    or version_key(extension.get("MinimumOSVersion")) != version_key(info.get("MinimumOSVersion"))
+                    or extension.get("CFBundlePackageType") != "XPC!"
+                    or not isinstance(point, dict) or point.get("NSExtensionPointIdentifier") != "com.apple.widgetkit-extension"):
+                raise ValueError("Rest extension identity, version or platform differs from the app")
+            name = extension.get("CFBundleExecutable")
+            if not isinstance(name, str) or not FILE_PATTERN.fullmatch(name):
+                raise ValueError("Invalid rest extension executable name")
+            validate_device_executable(archive, expected.removesuffix("Info.plist") + name)
         return info
 
 

@@ -28,3 +28,7 @@
 ## Границы подтверждения
 
 Физическая блокировка iPhone, системное резервирование/восстановление, загрузка оригиналов Photos/iCloud и реальный браузерный OAuth не подтверждены Simulator или сборкой. Системная доставка уведомлений не относится к этому пакету. QA-captures, xcresult и искусственные исходники остаются в игнорируемых `.build/` и `.impeccable/review/`.
+
+## Выпуск
+
+[main workflow 10](https://github.com/nekell3r/podhod-ios/actions/runs/41254012136), commit `1d7425043da153869797e945b7d5c04e7ff7048e`: **212 core-тестов без ошибок**, Python-проверки и unsigned Release iPhone успешны. Ограниченный серверный приёмник вернул receipt этого commit, версии 1.7.10 и build 1010. Независимо проверены [IPA](https://podhod.62.171.189.28.nip.io/releases/Podhod-1.7.10-1010.ipa) и [источник](https://podhod.62.171.189.28.nip.io/releases/source.json): 7 699 987 байт, SHA-256 `e48aa96f5fd4ab10a525365775e92269559d042ce0a7133dc2e9294c6485e21f`. Проверяющий headless-браузер закрыт. Физическая установка через Feather отдельно не проверялась.

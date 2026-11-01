@@ -32,6 +32,7 @@ final class AccountWorkspaces {
     var accountID: String? { selection?.accountID }
     var isLegacy: Bool { selection == nil || selection?.legacyWorkspace == true }
     var currentDirectory: URL { isLegacy ? rootURL : directory(for: accountID) }
+    var storageID: String { SHA256.hash(data: Data(currentDirectory.path.utf8)).map { String(format: "%02x", $0) }.joined() }
 
     init(rootURL: URL = URL.applicationSupportDirectory.appending(path: "Podhod", directoryHint: .isDirectory)) {
         self.rootURL = rootURL

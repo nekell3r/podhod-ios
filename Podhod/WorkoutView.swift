@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WorkoutView: View {
     @Bindable var store: WorkoutStore
+    @Bindable var restPresentation: WorkoutRestPresentation
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -132,7 +133,7 @@ struct WorkoutView: View {
         .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise) }
         .sheet(item: $historyExercise) { exercise in ExerciseHistoryView(store: store, exercise: exercise) }
         .sheet(item: $settingsSession) { session in
-            WorkoutRestSettings(store: store, sessionID: session.id, exercise: session.exercises[session.currentExercise])
+                WorkoutRestSettings(store: store, sessionID: session.id, exercise: session.exercises[session.currentExercise], restPresentation: restPresentation)
         }
         .sheet(item: $compositionSession) { session in
             WorkoutCompositionView(store: store, sessionID: session.id)
@@ -602,6 +603,7 @@ private struct WorkoutRestBar: View {
 
 private struct WorkoutRestSettings: View {
     var store: WorkoutStore
+    var restPresentation: WorkoutRestPresentation
     let sessionID: UUID
     let exercise: SessionExercise
     @Environment(\.dismiss) private var dismiss
@@ -609,8 +611,9 @@ private struct WorkoutRestSettings: View {
     @State private var afterExercise: Int
     @State private var errorMessage: String?
 
-    init(store: WorkoutStore, sessionID: UUID, exercise: SessionExercise) {
+    init(store: WorkoutStore, sessionID: UUID, exercise: SessionExercise, restPresentation: WorkoutRestPresentation) {
         self.store = store
+        self.restPresentation = restPresentation
         self.sessionID = sessionID
         self.exercise = exercise
         _betweenSets = State(initialValue: exercise.restSeconds)
@@ -627,6 +630,19 @@ private struct WorkoutRestSettings: View {
                 } footer: {
                     Text("0 — без таймера. Настройки применятся после следующих подходов этой тренировки. Текущий отдых меняется кнопками −30/+30 на рабочем экране.")
                 }
+                Section {
+                    Toggle("Live Activity", isOn: Binding(get: { restPresentation.liveEnabled }, set: { restPresentation.setLiveEnabled($0) }))
+                        .accessibilityIdentifier("rest.live.enabled")
+                    Text(restPresentation.liveStatus).font(.caption).foregroundStyle(Color.gymMuted)
+                    if restPresentation.notificationsEnabled {
+                        Button("Выключить уведомление отдыха") { restPresentation.disableNotifications() }
+                    } else {
+                        Button("Уведомить в конце отдыха") { Task { await restPresentation.enableNotifications() } }
+                            .disabled(restPresentation.isRequestingPermission).accessibilityIdentifier("rest.notification.enable")
+                    }
+                    Text(restPresentation.notificationStatus).font(.caption).foregroundStyle(Color.gymMuted)
+                } header: { Text("Вне приложения") }
+                footer: { Text("На экране блокировки показывается только таймер. Действия Live Activity открывают «Подход». Эти настройки сохраняются сразу.") }
             }
             .navigationTitle("Отдых")
             #if os(iOS)
