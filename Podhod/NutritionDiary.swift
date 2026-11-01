@@ -193,6 +193,16 @@ struct NutritionRecipesDocument: Codable, Equatable {
     var isValid: Bool {
         version == 1 && recipes.count <= 100 && Set(recipes.map(\.id)).count == recipes.count && recipes.allSatisfy(\.isValid)
     }
+
+    func searchRecipes(query: String, category: NutritionRecipeCategory? = nil, quickOnly: Bool = false, proteinOnly: Bool = false) -> [NutritionOwnRecipe] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return recipes.filter { recipe in
+            (category == nil || recipe.category == category) && (!quickOnly || recipe.minutes <= 20) &&
+                (!proteinOnly || recipe.perServing.map { $0.proteinGrams >= 20 } == true) &&
+                (query.isEmpty || recipe.name.localizedStandardContains(query) ||
+                    recipe.ingredients.contains { $0.food.name.localizedStandardContains(query) })
+        }
+    }
 }
 
 struct NutritionPreferencesDocument: Codable, Equatable {

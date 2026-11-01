@@ -2,6 +2,57 @@ import XCTest
 
 @MainActor
 final class NutritionDiaryUITests: XCTestCase {
+    func testRecipeLibraryCombinesSourcesAndFiltersOwnRecipes() {
+        let app = launchDiary()
+        defer { app.terminate() }
+        app.segmentedControls.buttons["Рецепты"].tap()
+        let source = app.segmentedControls["nutrition.recipe.source"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        XCTAssertTrue(source.buttons["Все"].isSelected)
+        let first = app.buttons["nutrition.recipe.mine.80000000-0000-4000-8000-000000000001"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        capture("recipe-library-all", app: app)
+        let search = app.textFields["Рецепт или ингредиент"]
+        search.tap()
+        search.typeText("QA Рецепт 15\n")
+        let last = app.buttons["nutrition.recipe.mine.80000000-0000-4000-8000-000000000015"]
+        XCTAssertTrue(last.waitForExistence(timeout: 5))
+        source.buttons["Мои"].tap()
+        XCTAssertTrue(last.exists)
+        capture("recipe-library-mine", app: app)
+        source.buttons["Каталог"].tap()
+        XCTAssertFalse(last.exists)
+        XCTAssertTrue(app.staticTexts["Рецепты не найдены"].waitForExistence(timeout: 5))
+        app.buttons["Очистить поиск"].tap()
+        let bundled = app.buttons["nutrition.recipe.catalog.banana-oatmeal"]
+        XCTAssertTrue(bundled.waitForExistence(timeout: 5))
+        XCTAssertFalse(first.exists)
+        capture("recipe-library-catalog", app: app)
+        source.buttons["Все"].tap()
+        search.tap()
+        search.typeText("QA Рецепт 15\n")
+        last.tap()
+        XCTAssertTrue(app.navigationBars["Мой рецепт"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["QA Рецепт 15"].exists)
+        XCTAssertTrue(app.staticTexts["Ингредиенты"].exists)
+        app.buttons["В избранное"].tap()
+        capture("recipe-library-own-details", app: app)
+        app.navigationBars["Мой рецепт"].buttons["Готово"].tap()
+        app.buttons["Очистить поиск"].tap()
+        source.buttons["Мои"].tap()
+        app.descendants(matching: .any).matching(identifier: "nutrition.recipe.filters").firstMatch.tap()
+        let favorites = app.switches["Только избранное"]
+        reveal(favorites, in: app)
+        favorites.tap()
+        XCTAssertTrue(last.exists)
+        XCTAssertFalse(first.exists)
+        app.terminate()
+        app.launch()
+        app.buttons["Питание"].tap()
+        app.segmentedControls.buttons["Рецепты"].tap()
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+    }
+
     func testDiaryPortionPersistsAndDeletes() {
         let app = launchDiary()
         defer { app.terminate() }
@@ -59,7 +110,7 @@ final class NutritionDiaryUITests: XCTestCase {
         let app = launchDiary()
         defer { app.terminate() }
         openMenu(app)
-        app.buttons["Свои рецепты"].tap()
+        app.buttons["Мои рецепты"].tap()
         app.buttons["Создать рецепт"].tap()
         fill(app.textFields["Название"], with: "QA Вода", in: app)
         app.buttons["Готово"].firstMatch.tap()

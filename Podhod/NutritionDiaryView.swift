@@ -13,7 +13,7 @@ struct NutritionHomeView: View {
                 Text("Рецепты").tag(1)
             }.pickerStyle(.segmented).padding(.horizontal, 22).padding(.top, 16)
             if section == 0 { NutritionDiaryView(store: diary, sync: sync) }
-            else { NutritionView(preferences: preferences) }
+            else { NutritionView(preferences: preferences, diary: diary, sync: sync) }
         }
     }
 }
@@ -40,7 +40,7 @@ struct NutritionDiaryView: View {
                     Spacer(minLength: 8)
                     Menu {
                         Button("Цели питания", systemImage: "target") { showGoals = true }
-                        Button("Свои рецепты", systemImage: "book") { showOwnRecipes = true }
+                        Button("Мои рецепты", systemImage: "book") { showOwnRecipes = true }
                         Button("Экспорт дневника", systemImage: "square.and.arrow.up") { showExport = true }
                     } label: { Image(systemName: "ellipsis.circle").font(.title2).frame(minWidth: 44, minHeight: 44) }
                         .accessibilityLabel("Настройки питания")
@@ -185,8 +185,8 @@ struct NutritionFoodSelection<Destination: View>: View {
                     }
                 }
             }
-            Section("Свои рецепты") {
-                ForEach(store.archive.recipes.document.recipes.filter { query.isEmpty || $0.name.localizedStandardContains(query) }) { recipe in
+            Section("Мои рецепты") {
+                ForEach(store.archive.recipes.document.searchRecipes(query: query)) { recipe in
                     if let snapshot = recipe.snapshot {
                         NavigationLink(recipe.name) {
                             destination(NutritionFoodChoice(food: snapshot, gramsPerServing: recipe.preparedWeightGrams / recipe.servings))
@@ -194,7 +194,7 @@ struct NutritionFoodSelection<Destination: View>: View {
                     }
                 }
                 if store.archive.recipes.document.recipes.isEmpty {
-                    Text("Свои рецепты можно создать в меню дневника.").font(.caption).foregroundStyle(.secondary)
+                    Text("Добавь рецепт кнопкой «+» во вкладке «Рецепты».").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }.searchable(text: $query, prompt: "Продукт или рецепт")
@@ -431,7 +431,7 @@ struct NutritionOwnRecipesView: View {
                     Button("Удалить рецепт", role: .destructive) { deleting = recipe }.font(.caption)
                 }.padding(.vertical, 6)
             }
-        }.navigationTitle("Свои рецепты")
+        }.navigationTitle("Мои рецепты")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }
             .confirmationDialog("Удалить рецепт? Записи дневника сохранят его состав.", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("Удалить", role: .destructive) { if let deleting { store.removeRecipe(deleting.id, expected: deleting) }; deleting = nil }

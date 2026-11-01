@@ -73,6 +73,43 @@ final class NutritionDiaryTests: XCTestCase {
         XCTAssertNil(recipe.snapshot)
     }
 
+    func testFifteenOwnRecipesRemainSearchableByNameAndIngredientWithoutChangingIDs() throws {
+        let recipes = (1...15).map { number in
+            NutritionOwnRecipe(name: "Мой рецепт \(number)", category: .main, minutes: 15, servings: 2,
+                preparedWeightGrams: 200,
+                ingredients: [NutritionRecipeIngredient(grams: 100,
+                    food: NutritionFoodSnapshot(name: "Готовая курица", per100Grams:
+                        NutritionFacts(energyKcal: 150, proteinGrams: 30, fatGrams: 3, carbohydrateGrams: 0)))],
+                steps: ["Приготовить"])
+        }
+        let original = NutritionRecipesDocument(recipes: recipes)
+        let document = try JSONDecoder().decode(NutritionRecipesDocument.self, from: JSONEncoder().encode(original))
+        XCTAssertTrue(document.isValid)
+        XCTAssertEqual(document.searchRecipes(query: "").map(\.id), recipes.map(\.id))
+        XCTAssertEqual(document.searchRecipes(query: "  МОЙ РЕЦЕПТ 15 ").map(\.id), [recipes[14].id])
+        XCTAssertEqual(document.searchRecipes(query: "КУРИЦА").count, 15)
+        XCTAssertTrue(document.searchRecipes(query: "несуществующий рецепт").isEmpty)
+        XCTAssertEqual(document, original)
+    }
+
+    func testOwnRecipeFiltersUseActualCategoryTimeAndPerServingProtein() {
+        let ingredient = NutritionRecipeIngredient(grams: 100,
+            food: NutritionFoodSnapshot(name: "Белковый продукт", per100Grams:
+                NutritionFacts(energyKcal: 150, proteinGrams: 30, fatGrams: 3, carbohydrateGrams: 0)))
+        let quick = NutritionOwnRecipe(name: "Быстрый", category: .main, minutes: 20, servings: 1,
+            preparedWeightGrams: 200, ingredients: [ingredient], steps: ["Подать"])
+        var slow = quick
+        slow.id = UUID(); slow.name = "Долгий"; slow.minutes = 21; slow.category = .salad
+        var divided = quick
+        divided.id = UUID(); divided.name = "Две порции"; divided.servings = 2
+        let document = NutritionRecipesDocument(recipes: [quick, slow, divided])
+        XCTAssertEqual(document.searchRecipes(query: "", category: .salad).map(\.id), [slow.id])
+        XCTAssertEqual(document.searchRecipes(query: "", quickOnly: true).map(\.id), [quick.id, divided.id])
+        XCTAssertEqual(document.searchRecipes(query: "", proteinOnly: true).map(\.id), [quick.id, slow.id])
+        XCTAssertEqual(document.searchRecipes(query: "продукт", category: .main, quickOnly: true, proteinOnly: true).map(\.id), [quick.id])
+        XCTAssertTrue(document.searchRecipes(query: "", category: .breakfast).isEmpty)
+    }
+
     func testPendingRetryIsIdenticalAcrossEditsAndRelaunch() throws {
         var state = RevisionedDocumentState(localDocument: NutritionPreferencesDocument(favoriteFoodIDs: ["first"]))
         let original = try XCTUnwrap(state.pending)
