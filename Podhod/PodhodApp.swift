@@ -13,6 +13,7 @@ struct PodhodApp: App {
     @State private var diary: NutritionDiaryStore
     @State private var nutritionSync: NutritionSynchronization
     @State private var bodyProgress: BodyProgressStore
+    @State private var knowledge: KnowledgeBookmarks
     @State private var reminders: AppNotifications
     @State private var restPresentation = WorkoutRestPresentation()
     @State private var workspaces: AccountWorkspaces
@@ -41,8 +42,10 @@ struct PodhodApp: App {
         let nutrition = NutritionPreferences(diary: diary)
         let bodyProgress = BodyProgressStore(fileURL: workspaces.currentDirectory.appending(path: "body-progress.json"),
             accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
+        let knowledge = KnowledgeBookmarks(fileURL: workspaces.currentDirectory.appending(path: "knowledge-bookmarks.json"),
+            accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
         if (auth.signedIn && auth.verifiedAccountID != workspaces.accountID)
-            || (!auth.signedIn && workspaces.accountID != nil) { bodyProgress.retire() }
+            || (!auth.signedIn && workspaces.accountID != nil) { bodyProgress.retire(); knowledge.retire() }
         store.accountStorageError = workspaces.errorMessage
         protein.accountStorageError = workspaces.errorMessage
         nutrition.accountStorageError = workspaces.errorMessage
@@ -55,6 +58,7 @@ struct PodhodApp: App {
         _diary = State(initialValue: diary)
         _nutritionSync = State(initialValue: NutritionSynchronization(store: diary, auth: auth, accountID: workspaces.accountID))
         _bodyProgress = State(initialValue: bodyProgress)
+        _knowledge = State(initialValue: knowledge)
         _reminders = State(initialValue: AppNotifications())
         _workspaces = State(initialValue: workspaces)
     }
@@ -63,7 +67,7 @@ struct PodhodApp: App {
         WindowGroup {
             RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition,
                 diary: diary, nutritionSync: nutritionSync, bodyProgress: bodyProgress,
-                restPresentation: restPresentation, restWorkspaceID: restWorkspaceID)
+                restPresentation: restPresentation, restWorkspaceID: restWorkspaceID, knowledge: knowledge)
                 .id(workspaceRevision)
                 .onAppear {
                     sync.accountDiscovered = { switchAccount(to: $0) }
@@ -75,6 +79,7 @@ struct PodhodApp: App {
                 .onChange(of: auth.sessionID) { _, _ in
                     if auth.signedIn {
                         bodyProgress.retire()
+                        knowledge.retire()
                         restPresentation.synchronize(nil, foreground: scenePhase == .active)
                     }
                 }
@@ -92,6 +97,14 @@ struct PodhodApp: App {
                         }
                         bodyProgress.retire()
                         bodyProgress = restored
+                    }
+                    if knowledge.loadFailed {
+                        let wasRetired = knowledge.isRetired
+                        let restored = KnowledgeBookmarks(fileURL: workspaces.currentDirectory.appending(path: "knowledge-bookmarks.json"),
+                            accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
+                        if wasRetired || (auth.signedIn && auth.verifiedAccountID != workspaces.accountID) { restored.retire() }
+                        knowledge.retire()
+                        knowledge = restored
                     }
                     if !auth.signedIn && workspaces.accountID != nil {
                         bodyProgress.retire()
@@ -112,12 +125,13 @@ struct PodhodApp: App {
     }
 
     private func switchAccount(to accountID: String?) -> Bool {
-        if !workspaces.isLegacy && workspaces.accountID == accountID && !bodyProgress.isRetired { return false }
+        if !workspaces.isLegacy && workspaces.accountID == accountID && !bodyProgress.isRetired && !knowledge.isRetired { return false }
         bodyProgress.retire()
+        knowledge.retire()
         restPresentation.synchronize(nil, foreground: scenePhase == .active)
         do {
             guard !store.loadFailed, !protein.loadFailed, !nutrition.loadFailed, !diary.loadFailed,
-                  !bodyProgress.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
+                  !bodyProgress.loadFailed, !knowledge.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
             guard store.pauseTimingForAccountSwitch() else { throw TrainingError.invalidArchive }
             let directory = try workspaces.prepare(accountID: accountID, legacyAccountID: sync.accountID)
             let nextStore = WorkoutStore(fileURL: directory.appending(path: "training.json"))
@@ -125,8 +139,9 @@ struct PodhodApp: App {
             let nextDiary = NutritionDiaryStore(fileURL: directory.appending(path: "nutrition.json"))
             let nextNutrition = NutritionPreferences(diary: nextDiary)
             let nextBody = BodyProgressStore(fileURL: directory.appending(path: "body-progress.json"), accountID: accountID)
+            let nextKnowledge = KnowledgeBookmarks(fileURL: directory.appending(path: "knowledge-bookmarks.json"), accountID: accountID)
             let nextSync = CloudSynchronization(store: nextStore, auth: auth, protein: nextProtein)
-            guard !nextStore.loadFailed, !nextProtein.loadFailed, !nextNutrition.loadFailed, !nextBody.loadFailed, nextSync.storageReady,
+            guard !nextStore.loadFailed, !nextProtein.loadFailed, !nextNutrition.loadFailed, !nextBody.loadFailed, !nextKnowledge.loadFailed, nextSync.storageReady,
                   nextSync.accountID == nil || nextSync.accountID == accountID,
                   nextDiary.archive.accountID == nil || nextDiary.archive.accountID == accountID else { throw TrainingError.invalidArchive }
             try workspaces.commit(accountID: accountID)
@@ -135,6 +150,7 @@ struct PodhodApp: App {
             nutrition = nextNutrition
             diary = nextDiary
             bodyProgress = nextBody
+            knowledge = nextKnowledge
             nutritionSync = NutritionSynchronization(store: nextDiary, auth: auth, accountID: accountID)
             sync = nextSync
             nextStore.resumeAccountTiming()
@@ -166,6 +182,7 @@ struct RootView: View {
     @Bindable var bodyProgress: BodyProgressStore
     @Bindable var restPresentation: WorkoutRestPresentation
     let restWorkspaceID: String?
+    @Bindable var knowledge: KnowledgeBookmarks
     @Environment(\.scenePhase) private var scenePhase
     @State private var showAccount = false
     @State private var tab: AppTab = .today
@@ -178,7 +195,7 @@ struct RootView: View {
                     TodayView(store: store, start: { showWorkout = true }, openProgram: { tab = .program },
                               openAccount: { showAccount = true }, syncStatus: sync.status, protein: protein, reminders: reminders)
                 case .program:
-                    ProgramView(store: store, sync: sync, start: { showWorkout = true })
+                    ProgramView(store: store, sync: sync, knowledge: knowledge, start: { showWorkout = true })
                 case .progress:
                     ProgressViewScreen(store: store, bodyProgress: bodyProgress)
                 case .nutrition:
@@ -208,9 +225,9 @@ struct RootView: View {
             #endif
         }
         #if os(iOS)
-        .fullScreenCover(isPresented: $showWorkout) { WorkoutView(store: store, restPresentation: restPresentation) }
+        .fullScreenCover(isPresented: $showWorkout) { WorkoutView(store: store, restPresentation: restPresentation, knowledge: knowledge) }
         #else
-        .sheet(isPresented: $showWorkout) { WorkoutView(store: store, restPresentation: restPresentation).frame(width: 430, height: 810) }
+        .sheet(isPresented: $showWorkout) { WorkoutView(store: store, restPresentation: restPresentation, knowledge: knowledge).frame(width: 430, height: 810) }
         #endif
         .sheet(isPresented: $showAccount) {
             CloudSettingsView(auth: auth, sync: sync)

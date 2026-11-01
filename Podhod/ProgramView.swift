@@ -3,6 +3,7 @@ import SwiftUI
 struct ProgramView: View {
     var store: WorkoutStore
     var sync: CloudSynchronization
+    var knowledge: KnowledgeBookmarks
     var start: () -> Void
     @State private var editingDay: TrainingDay?
     @State private var editingDate: Date?
@@ -10,6 +11,7 @@ struct ProgramView: View {
     @State private var showTemplate = false
     @State private var detailExercise: Exercise?
     @State private var showCycle = false
+    @State private var showKnowledge = false
 
     private var dates: [Date] { store.trainingCalendar.weekDates(containing: selectedWeek) }
     private var week: TrainingWeek { store.scheduledWeek(containing: selectedWeek) }
@@ -25,6 +27,13 @@ struct ProgramView: View {
                     Text(showTemplate ? "Основа для новых недель." : "План на конкретные даты.")
                         .font(.subheadline).foregroundStyle(Color.gymMuted)
                 }.padding(.top, 24)
+                Button { showKnowledge = true } label: {
+                    HStack(spacing: 12) {
+                        Label("База знаний", systemImage: "book.closed").font(.headline)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption)
+                    }.foregroundStyle(Color.gymLime).frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("knowledge.open")
                 Picker("Что редактировать", selection: $showTemplate) {
                     Text("По датам").tag(false)
                     Text("Шаблон недели").tag(true)
@@ -150,7 +159,8 @@ struct ProgramView: View {
         .sheet(item: $editingDay) { day in
             DayEditor(store: store, day: day, destination: editingDate.map { .scheduled($0) } ?? .template)
         }
-        .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise) }
+        .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise, bookmarks: knowledge) }
+        .sheet(isPresented: $showKnowledge) { KnowledgeView(bookmarks: knowledge) }
         .sheet(isPresented: $showCycle) { TrainingCycleView(store: store) }
     }
 

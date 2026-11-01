@@ -3,6 +3,7 @@ import SwiftUI
 struct WorkoutView: View {
     @Bindable var store: WorkoutStore
     @Bindable var restPresentation: WorkoutRestPresentation
+    var knowledge: KnowledgeBookmarks
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -130,7 +131,7 @@ struct WorkoutView: View {
         }
         .tint(.gymLime).preferredColorScheme(.dark)
         .interactiveDismissDisabled(summary == nil)
-        .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise) }
+        .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise, bookmarks: knowledge) }
         .sheet(item: $historyExercise) { exercise in ExerciseHistoryView(store: store, exercise: exercise) }
         .sheet(item: $settingsSession) { session in
                 WorkoutRestSettings(store: store, sessionID: session.id, exercise: session.exercises[session.currentExercise], restPresentation: restPresentation)

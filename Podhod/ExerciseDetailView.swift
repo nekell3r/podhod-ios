@@ -3,12 +3,14 @@ import AVKit
 
 struct ExerciseDetailView: View {
     var exercise: Exercise
+    var bookmarks: KnowledgeBookmarks? = nil
     var add: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var player: AVPlayer?
     @State private var playingVideoID: String?
     @State private var playbackFailed = false
+    @State private var bookmarkError: String?
     private let catalog = ExerciseCatalog.bundled
     private var entry: ExerciseCatalogEntry? { catalog.entry(for: exercise.id) }
 
@@ -107,7 +109,24 @@ struct ExerciseDetailView: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Закрыть") { dismiss() } }
+                if let bookmarks, let entry {
+                    ToolbarItem(placement: .primaryAction) {
+                        let saved = bookmarks.exerciseIDs.contains(entry.id)
+                        Button {
+                            if !bookmarks.setExercise(entry.id, saved: !saved) {
+                                bookmarkError = bookmarks.errorMessage
+                                bookmarks.errorMessage = nil
+                            }
+                        } label: { Image(systemName: saved ? "bookmark.fill" : "bookmark") }
+                            .accessibilityLabel(saved ? "Убрать технику из сохранённого" : "Сохранить технику")
+                            .accessibilityIdentifier("knowledge.exercise.save")
+                            .disabled(bookmarks.loadFailed || bookmarks.isRetired)
+                    }
+                }
             }
+            .alert("Не удалось изменить сохранённое", isPresented: Binding(get: { bookmarkError != nil }, set: { if !$0 { bookmarkError = nil } })) {
+                Button("Понятно") { bookmarkError = nil }
+            } message: { Text(bookmarkError ?? "") }
             .safeAreaInset(edge: .bottom) {
                 if let add {
                     Button {

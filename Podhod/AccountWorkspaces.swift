@@ -18,7 +18,7 @@ final class AccountWorkspaces {
         var sourceFiles: [String: String]
     }
 
-    private static let archiveNames = ["training.json", "protein.json", "sync-state.json", "nutrition-preferences.json", "nutrition.json", "body-progress.json"]
+    private static let archiveNames = ["training.json", "protein.json", "sync-state.json", "nutrition-preferences.json", "nutrition.json", "body-progress.json", "knowledge-bookmarks.json"]
 
     private enum Destination: Equatable { case guest, account(String) }
 
