@@ -9,6 +9,7 @@ struct ProgramView: View {
     @State private var editingDate: Date?
     @State private var selectedWeek = Date()
     @State private var showTemplate = false
+    @State private var showSavedTemplates = false
     @State private var detailExercise: Exercise?
     @State private var showCycle = false
     @State private var showKnowledge = false
@@ -38,6 +39,12 @@ struct ProgramView: View {
                     Text("По датам").tag(false)
                     Text("Шаблон недели").tag(true)
                 }.pickerStyle(.segmented)
+                if showTemplate {
+                    Button { showSavedTemplates = true } label: {
+                        Label("Сохранённые шаблоны · \(store.savedTemplatesState.document.templates.count)", systemImage: "square.stack")
+                            .font(.headline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }.foregroundStyle(Color.gymLime).accessibilityIdentifier("templates.open")
+                }
                 Button { showCycle = true } label: {
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "calendar").font(.title2)
@@ -161,6 +168,7 @@ struct ProgramView: View {
         }
         .sheet(item: $detailExercise) { exercise in ExerciseDetailView(exercise: exercise, bookmarks: knowledge) }
         .sheet(isPresented: $showKnowledge) { KnowledgeView(bookmarks: knowledge) }
+        .sheet(isPresented: $showSavedTemplates) { SavedTrainingTemplatesView(store: store) }
         .sheet(isPresented: $showCycle) { TrainingCycleView(store: store) }
     }
 

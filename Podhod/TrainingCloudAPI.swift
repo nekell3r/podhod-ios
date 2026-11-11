@@ -70,6 +70,26 @@ struct TrainingCloudAPI {
         try await request("PUT", path: "v1/cycle", body: Self.encode(change))
     }
 
+    func savedTemplates() async throws -> RevisionedDocumentRecord<SavedTrainingTemplatesDocument> {
+        let record: RevisionedDocumentRecord<SavedTrainingTemplatesDocument> = try await request("GET", path: "v1/saved-templates")
+        guard record.revision >= 0, record.document.isValid else { throw TrainingError.unsupportedArchive }
+        return record
+    }
+
+    func saveSavedTemplates(_ change: PendingDocumentWrite<SavedTrainingTemplatesDocument>) async throws -> RevisionedDocumentRecord<SavedTrainingTemplatesDocument> {
+        try await request("PUT", path: "v1/saved-templates", body: Self.encode(change))
+    }
+
+    func creatineDay(_ key: String) async throws -> RevisionedDocumentRecord<CreatineDayDocument> {
+        let record: RevisionedDocumentRecord<CreatineDayDocument> = try await request("GET", path: "v1/creatine/\(key)")
+        guard record.revision >= 0, record.document.isValid, record.document.date == key else { throw CloudDocumentError.invalidResponse }
+        return record
+    }
+
+    func saveCreatineDay(_ change: PendingDocumentWrite<CreatineDayDocument>, on key: String) async throws -> RevisionedDocumentRecord<CreatineDayDocument> {
+        try await request("PUT", path: "v1/creatine/\(key)", body: Self.encode(change))
+    }
+
     func history() async throws -> [WorkoutSession] {
         struct History: Decodable { var sessions: [WorkoutSession] }
         let result: History = try await request("GET", path: "v1/history")

@@ -238,7 +238,7 @@ struct SetRemovalIntent: Codable, Equatable, Hashable {
 }
 
 struct TrainingArchive: Codable, Equatable {
-    var version = 6
+    var version = 7
     var week = TrainingDay.initialWeek()
     var history: [WorkoutSession] = []
     var active: WorkoutSession?
@@ -251,6 +251,8 @@ struct TrainingArchive: Codable, Equatable {
     var setRemovalIntents: [SetRemovalIntent]?
     var templateStructureVersion: Int?
     var trainingCycle: RevisionedDocumentState<TrainingCycleDocument>?
+    var savedTemplates: RevisionedDocumentState<SavedTrainingTemplatesDocument>?
+    var creatineDays: [String: RevisionedDocumentState<CreatineDayDocument>]?
 
     var hasValidStructure: Bool {
         (0...1).contains(templateStructureVersion ?? 0) &&
@@ -258,7 +260,11 @@ struct TrainingArchive: Codable, Equatable {
             week.allSatisfy { $0.hasValidPlannedStructure && $0.context?.cycle == nil } &&
             (scheduledWeeks ?? []).allSatisfy(\.hasValidStructure) &&
             (active?.hasValidStructure ?? true) && history.allSatisfy(\.hasValidStructure) &&
-            (trainingCycle?.isValid(documentIsValid: { $0.isValid }) ?? true)
+            (trainingCycle?.isValid(documentIsValid: { $0.isValid }) ?? true) &&
+            (savedTemplates?.isValid(documentIsValid: { $0.isValid }) ?? true) &&
+            (creatineDays ?? [:]).allSatisfy { key, state in
+                state.isValid(documentIsValid: { $0.isValid && $0.date == key })
+            }
     }
 
     var hasValidSetRemovalIntents: Bool {

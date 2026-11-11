@@ -11,7 +11,7 @@ private struct TrainingSyncCheckpoint: Codable {
 }
 
 struct TrainingSyncConflict {
-    enum Resource { case template, week(String), active, history, protein(String), cycle }
+    enum Resource { case template, week(String), active, history, protein(String), cycle, savedTemplates, creatine(String) }
     var resource: Resource
     var message: String
     var canChooseServer: Bool
@@ -36,6 +36,8 @@ final class CloudSynchronization {
     @ObservationIgnored private var lastCheckpointData: Data?
     @ObservationIgnored private var lastHistoryRead: Date?
     @ObservationIgnored private var lastCycleRead: Date?
+    @ObservationIgnored private var lastTemplatesRead: Date?
+    @ObservationIgnored private var lastCreatineRead: Date?
     @ObservationIgnored private let fileURL: URL
 
     init(store: WorkoutStore, auth: CloudAuthentication, protein: ProteinTracker) {
@@ -66,6 +68,8 @@ final class CloudSynchronization {
         if !same(store.archive.week, checkpoint.template?.days) ||
             (store.archive.templateStructureVersion ?? 0) != (checkpoint.template?.structureVersion ?? 0) { return true }
         if store.cycleState.pending != nil || store.cycleState.conflict != nil { return true }
+        if store.savedTemplatesState.pending != nil || store.savedTemplatesState.conflict != nil { return true }
+        if (store.archive.creatineDays ?? [:]).values.contains(where: { $0.pending != nil || $0.conflict != nil }) { return true }
         if !same(store.activeWorkoutState, checkpoint.active?.state) { return true }
         if store.archive.history.contains(where: { !checkpoint.historyIDs.contains($0.id) }) { return true }
         if protein.days.contains(where: { local in
@@ -135,6 +139,20 @@ final class CloudSynchronization {
                     if conflict != nil { return }
                 }
             }
+            currentResource = .savedTemplates
+            try await synchronizeSavedTemplates(api)
+            guard conflict == nil else { return }
+            var creatineDates = Set((store.archive.creatineDays ?? [:]).filter {
+                $0.value.pending != nil || $0.value.conflict != nil
+            }.keys)
+            let today = store.trainingCalendar.dayKey(for: Date())
+            if Date().timeIntervalSince(lastCreatineRead ?? .distantPast) >= 30 { creatineDates.insert(today) }
+            for key in creatineDates.sorted() {
+                currentResource = .creatine(key)
+                try await synchronizeCreatine(key, api: api)
+                guard conflict == nil else { return }
+            }
+            if creatineDates.contains(today) { lastCreatineRead = Date() }
             if conflict == nil {
                 lastSyncedAt = Date()
                 message = "Синхронизировано"
@@ -218,6 +236,61 @@ final class CloudSynchronization {
         if store.cycleState.conflict != nil {
             conflict = TrainingSyncConflict(resource: .cycle,
                 message: "Цикл изменён на iPhone и сервере. Обе версии сохранены. Выбор не переписывает уже созданные недели и историю.",
+                canChooseServer: true, canChooseLocal: true)
+        }
+    }
+
+    private func synchronizeSavedTemplates(_ api: TrainingCloudAPI) async throws {
+        if store.savedTemplatesState.conflict == nil, let pending = store.savedTemplatesState.pending {
+            do {
+                let remote = try await api.saveSavedTemplates(pending)
+                var state = store.savedTemplatesState
+                try state.acknowledge(requestID: pending.requestID, record: remote)
+                try requireSaved(store.saveTemplatesState(state))
+            } catch let failure as TrainingCloudFailure where failure.status == 409 && failure.code != "upgrade_required" {
+                let remote = try await api.savedTemplates()
+                var state = store.savedTemplatesState
+                try state.reject(requestID: pending.requestID, remote: remote)
+                try requireSaved(store.saveTemplatesState(state))
+            }
+        }
+        if store.savedTemplatesState.conflict == nil, Date().timeIntervalSince(lastTemplatesRead ?? .distantPast) >= 30 {
+            let remote = try await api.savedTemplates()
+            var state = store.savedTemplatesState
+            try state.receive(remote)
+            try requireSaved(store.saveTemplatesState(state))
+            lastTemplatesRead = Date()
+        }
+        if store.savedTemplatesState.conflict != nil {
+            conflict = TrainingSyncConflict(resource: .savedTemplates,
+                message: "Сохранённые шаблоны изменены на iPhone и сервере. Обе версии сохранены. Выбери, какую оставить.",
+                canChooseServer: true, canChooseLocal: true)
+        }
+    }
+
+    private func synchronizeCreatine(_ key: String, api: TrainingCloudAPI) async throws {
+        if store.creatineState(on: key).conflict == nil, let pending = store.creatineState(on: key).pending {
+            do {
+                let remote = try await api.saveCreatineDay(pending, on: key)
+                var state = store.creatineState(on: key)
+                try state.acknowledge(requestID: pending.requestID, record: remote)
+                try requireSaved(store.saveCreatineState(state, on: key))
+            } catch let failure as TrainingCloudFailure where failure.status == 409 && failure.code != "upgrade_required" {
+                let remote = try await api.creatineDay(key)
+                var state = store.creatineState(on: key)
+                try state.reject(requestID: pending.requestID, remote: remote)
+                try requireSaved(store.saveCreatineState(state, on: key))
+            }
+        }
+        if store.creatineState(on: key).conflict == nil {
+            let remote = try await api.creatineDay(key)
+            var state = store.creatineState(on: key)
+            try state.receive(remote)
+            try requireSaved(store.saveCreatineState(state, on: key))
+        }
+        if store.creatineState(on: key).conflict != nil {
+            conflict = TrainingSyncConflict(resource: .creatine(key),
+                message: "Отметка креатина за \(key) отличается на iPhone и сервере. Обе версии сохранены. Выбери, какую оставить.",
                 canChooseServer: true, canChooseLocal: true)
         }
     }
@@ -425,6 +498,8 @@ final class CloudSynchronization {
         let activeBefore = store.activeWorkoutState
         let proteinBefore = protein.days
         let cycleBefore = store.cycleState.document
+        let templatesBefore = store.savedTemplatesState.document
+        let creatineBefore = store.archive.creatineDays
         do {
             let profile = try await api.profile()
             guard checkpoint.accountID == profile.id else {
@@ -487,6 +562,42 @@ final class CloudSynchronization {
                 try store.backupCycleConflict(remote: remote)
                 try state.resolve(usingServer: useServer, expected: remote)
                 try requireSaved(store.saveCycleState(state))
+            case .savedTemplates:
+                let remote = try await api.savedTemplates()
+                if useServer && store.savedTemplatesState.document != templatesBefore {
+                    message = "Список шаблонов изменился на iPhone. Проверь версии ещё раз."
+                    isSyncing = false
+                    return
+                }
+                var state = store.savedTemplatesState
+                guard state.conflict == remote else {
+                    try state.receive(remote)
+                    try requireSaved(store.saveTemplatesState(state))
+                    message = "Список шаблонов изменился на сервере. Проверь актуальные версии ещё раз."
+                    isSyncing = false
+                    return
+                }
+                try store.backupTemplatesConflict(remote: remote)
+                try state.resolve(usingServer: useServer, expected: remote)
+                try requireSaved(store.saveTemplatesState(state))
+            case .creatine(let key):
+                let remote = try await api.creatineDay(key)
+                if useServer && store.creatineState(on: key).document != (creatineBefore?[key]?.document ?? CreatineDayDocument(date: key)) {
+                    message = "Отметка креатина изменилась на iPhone. Проверь версии ещё раз."
+                    isSyncing = false
+                    return
+                }
+                var state = store.creatineState(on: key)
+                guard state.conflict == remote else {
+                    try state.receive(remote)
+                    try requireSaved(store.saveCreatineState(state, on: key))
+                    message = "Отметка креатина изменилась на сервере. Проверь актуальные версии ещё раз."
+                    isSyncing = false
+                    return
+                }
+                try store.backupCreatineConflict(remote: remote)
+                try state.resolve(usingServer: useServer, expected: remote)
+                try requireSaved(store.saveCreatineState(state, on: key))
             case .protein(let key):
                 let remote = try await api.proteinDay(key)
                 if useServer && !same(protein.days.first(where: { $0.date == key }), proteinBefore.first(where: { $0.date == key })) {

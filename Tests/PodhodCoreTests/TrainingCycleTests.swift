@@ -126,7 +126,7 @@ final class TrainingCycleTests: XCTestCase {
         let store = WorkoutStore(fileURL: url)
         XCTAssertFalse(store.loadFailed)
         XCTAssertTrue(store.saveTrainingCycle(try plan(), expected: store.cycleState.document))
-        XCTAssertEqual(store.archive.version, 6)
+        XCTAssertEqual(store.archive.version, 7)
         XCTAssertEqual(store.archive.setRemovalIntents, archive.setRemovalIntents)
         XCTAssertEqual(store.archive.active, archive.active)
         XCTAssertEqual(try Data(contentsOf: url.deletingLastPathComponent().appendingPathComponent("training-v5-backup.json")), data)

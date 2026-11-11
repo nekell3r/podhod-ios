@@ -12,7 +12,10 @@ struct TodayView: View {
     @State private var showStop = false
     @State private var stoppingSession: WorkoutSession?
     @State private var detailExercise: Exercise?
-    private var day: TrainingDay { store.today }
+    @State private var selectedDate: Date?
+    private var date: Date { selectedDate ?? Date() }
+    private var isToday: Bool { store.trainingCalendar.dayKey(for: date) == store.trainingCalendar.dayKey(for: Date()) }
+    private var day: TrainingDay { store.scheduledWeek(containing: date).day(on: date, calendar: store.trainingCalendar) }
     private var isEmpty: Bool { store.archive.week.allSatisfy { $0.exercises.isEmpty } && (store.archive.scheduledWeeks ?? []).allSatisfy { $0.workouts.isEmpty } }
 
     var body: some View {
@@ -33,14 +36,29 @@ struct TodayView: View {
                         }.buttonStyle(.plain).accessibilityLabel("Аккаунт и синхронизация")
                     }.padding(.top, 14)
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Сегодня").font(.system(size: 42, weight: .bold, design: .rounded))
-                        Text(day.name + ". Твой темп, твой прогресс.").font(.subheadline).foregroundStyle(Color.gymMuted)
+                        Text(isToday ? "Сегодня" : day.name).font(.system(size: 42, weight: .bold, design: .rounded))
+                        Text(isToday ? day.name + ". Твой темп, твой прогресс." : store.trainingCalendar.dayLabel(for: date) + " · Просмотр программы").font(.subheadline).foregroundStyle(Color.gymMuted)
                     }
+                    HStack {
+                        Button {
+                            selectedDate = store.trainingCalendar.calendar.date(byAdding: .weekOfYear, value: -1, to: date)
+                        } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+                            .accessibilityLabel("Предыдущая неделя")
+                        Spacer()
+                        Button("К сегодняшнему дню") { selectedDate = nil }
+                            .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
+                            .accessibilityIdentifier("today.return")
+                        Spacer()
+                        Button {
+                            selectedDate = store.trainingCalendar.calendar.date(byAdding: .weekOfYear, value: 1, to: date)
+                        } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
+                            .accessibilityLabel("Следующая неделя")
+                    }.buttonStyle(.plain).foregroundStyle(Color.gymLime)
                     weekStrip
                     Button(action: openAccount) {
                         Label(syncStatus, systemImage: "icloud").font(.caption).foregroundStyle(Color.gymMuted)
                     }.buttonStyle(.plain)
-                    if let active = store.archive.active {
+                    if isToday, let active = store.archive.active {
                         VStack(alignment: .leading, spacing: 16) {
                             HStack(alignment: .firstTextBaseline, spacing: 12) {
                                 Label("ТРЕНИРОВКА В ПРОЦЕССЕ", systemImage: "circle.fill")
@@ -59,17 +77,20 @@ struct TodayView: View {
                                 .font(.subheadline).foregroundStyle(Color.gymMuted)
                             Button(action: start) { Label("Продолжить тренировку", systemImage: "play.fill") }.buttonStyle(PrimaryButton())
                         }.modifier(GymCard())
-                    } else if isEmpty {
+                    } else if isToday && isEmpty {
                         onboarding
                     } else if !day.exercises.isEmpty {
                         workoutCard
                     } else {
                         restCard
                     }
-                    ProteinTodayCard(tracker: protein, reminders: reminders)
+                    if isToday {
+                        ProteinTodayCard(tracker: protein, reminders: reminders)
+                        CreatineTodayCard(store: store, reminders: reminders)
+                    }
                     if !day.exercises.isEmpty {
                         VStack(spacing: 12) {
-                            SectionLabel(title: "План на сегодня", detail: "Упражнений: \(day.exercises.count)")
+                            SectionLabel(title: isToday ? "План на сегодня" : "План на выбранный день", detail: "Упражнений: \(day.exercises.count)")
                             VStack(spacing: 2) {
                                 ForEach(Array(day.exercises.enumerated()), id: \.element.id) { index, exercise in
                                     Button { detailExercise = exercise.exercise } label: {
@@ -79,7 +100,9 @@ struct TodayView: View {
                                     if index < day.exercises.count - 1 { Divider().overlay(.white.opacity(0.03)) }
                                 }
                             }.modifier(GymCard())
-                            Button("Изменить тренировку") { showEditor = true }.font(.subheadline).foregroundStyle(Color.gymMuted).padding(.top, 4)
+                            if isToday {
+                                Button("Изменить тренировку") { showEditor = true }.font(.subheadline).foregroundStyle(Color.gymMuted).padding(.top, 4)
+                            }
                         }
                     }
                     if !store.archive.history.isEmpty {
@@ -126,16 +149,23 @@ struct TodayView: View {
 
     private var weekStrip: some View {
         HStack(spacing: 6) {
-            ForEach(store.trainingCalendar.weekDates(containing: Date()).map { store.scheduledWeek(containing: $0).day(on: $0, calendar: store.trainingCalendar) }) { item in
-                let selected = item.weekday == day.weekday
-                VStack(spacing: 11) {
-                    Text(item.shortName).font(.system(size: 10, weight: .bold))
-                    Image(systemName: item.exercises.isEmpty ? "minus" : "dumbbell.fill").font(.system(size: 13, weight: .semibold))
-                }.frame(maxWidth: .infinity).padding(.vertical, 15)
-                    .foregroundStyle(selected ? Color.gymBackground : (item.exercises.isEmpty ? .gymMuted : .white))
-                    .background(selected ? Color.gymLime : .gymCard, in: RoundedRectangle(cornerRadius: 17))
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(item.name), \(item.exercises.isEmpty ? "отдых" : "тренировка")\(selected ? ", сегодня" : "")")
+            ForEach(store.trainingCalendar.weekDates(containing: date), id: \.self) { itemDate in
+                let item = store.scheduledWeek(containing: itemDate).day(on: itemDate, calendar: store.trainingCalendar)
+                let selected = store.trainingCalendar.dayKey(for: itemDate) == store.trainingCalendar.dayKey(for: date)
+                let today = store.trainingCalendar.dayKey(for: itemDate) == store.trainingCalendar.dayKey(for: Date())
+                Button { selectedDate = today ? nil : itemDate } label: {
+                    VStack(spacing: 9) {
+                        Text(item.shortName).font(.caption2.bold())
+                        Image(systemName: item.exercises.isEmpty ? "minus" : "dumbbell.fill").font(.system(size: 13, weight: .semibold))
+                        Circle().fill(today ? (selected ? Color.gymBackground : .gymLime) : .clear).frame(width: 4, height: 4)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .foregroundStyle(selected ? Color.gymBackground : (item.exercises.isEmpty ? .gymMuted : .white))
+                        .background(selected ? Color.gymLime : .gymCard, in: RoundedRectangle(cornerRadius: 17))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityLabel("\(item.name), \(item.exercises.isEmpty ? "отдых" : "тренировка")\(today ? ", сегодня" : "")")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityIdentifier("today.day.\(item.weekday)")
             }
         }
     }
@@ -154,9 +184,11 @@ struct TodayView: View {
             }.font(.caption).foregroundStyle(Color.gymMuted)
             ExerciseArt(kind: day.exercises.first?.exercise.illustration ?? "bench")
                 .frame(height: 155).padding(.vertical, -6)
-            Button {
-                if store.startScheduled(on: Date()) { start() }
-            } label: { Label("Начать тренировку", systemImage: "play.fill") }.buttonStyle(PrimaryButton())
+            if isToday {
+                Button {
+                    if store.startScheduled(on: Date()) { start() }
+                } label: { Label("Начать тренировку", systemImage: "play.fill") }.buttonStyle(PrimaryButton())
+            }
         }.modifier(GymCard())
     }
 
@@ -177,12 +209,14 @@ struct TodayView: View {
         VStack(alignment: .leading, spacing: 18) {
             Image(systemName: "leaf").font(.system(size: 36)).foregroundStyle(Color.gymLime)
             Text("День восстановления").font(.system(.title, design: .rounded).bold())
-            Text("На сегодня упражнений нет. Отдых — тоже часть программы.").font(.subheadline).foregroundStyle(Color.gymMuted)
-            if let next = nextDay {
+            Text(isToday ? "На сегодня упражнений нет. Отдых — тоже часть программы." : "На этот день упражнений нет.").font(.subheadline).foregroundStyle(Color.gymMuted)
+            if isToday, let next = nextDay {
                 Text("Дальше: \(next.name.lowercased()) · \(next.title.isEmpty ? "тренировка" : next.title)")
                     .font(.caption).foregroundStyle(.white)
             }
-            Button("Добавить тренировку на сегодня") { showEditor = true }.buttonStyle(PrimaryButton())
+            if isToday {
+                Button("Добавить тренировку на сегодня") { showEditor = true }.buttonStyle(PrimaryButton())
+            }
         }.modifier(GymCard())
     }
 

@@ -19,7 +19,7 @@ final class WorkoutStore {
             if FileManager.default.fileExists(atPath: self.fileURL.path) {
                 let data = try Data(contentsOf: self.fileURL)
                 var loaded = try JSONDecoder().decode(TrainingArchive.self, from: data)
-                guard (1...6).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
+                guard (1...7).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
                 guard loaded.week.map(\.weekday).sorted() == Array(1...7),
                       loaded.week.allSatisfy({ $0.exercises.allSatisfy { (1...12).contains($0.setCount) } }),
                       loaded.active.map({ !$0.exercises.isEmpty && $0.exercises.indices.contains($0.currentExercise) }) ?? true
@@ -27,8 +27,8 @@ final class WorkoutStore {
                 guard loaded.active.map({ session in session.timing?.isValid(for: session) ?? true }) ?? true,
                       loaded.history.allSatisfy({ $0.timing?.isValid(for: $0) ?? true }),
                       loaded.hasValidSetRemovalIntents, loaded.hasValidStructure else { throw TrainingError.invalidArchive }
-                migrationSourceVersion = loaded.version < 6 ? loaded.version : nil
-                loaded.version = 6
+                migrationSourceVersion = loaded.version < 7 ? loaded.version : nil
+                loaded.version = 7
                 archive = loaded
             }
         } catch {
@@ -41,6 +41,7 @@ final class WorkoutStore {
         let catalog = ExerciseCatalog.bundled
         var seen: Set<UUID> = []
         var saved = archive.week.flatMap(\.exercises).map(\.exercise)
+        saved += (archive.savedTemplates?.document.templates ?? []).flatMap(\.days).flatMap(\.exercises).map(\.exercise)
         saved += (archive.trainingCycle?.document.plan?.weeks ?? []).flatMap(\.days).flatMap(\.exercises).map(\.exercise)
         saved += (archive.scheduledWeeks ?? []).flatMap(\.workouts).flatMap(\.exercises).map(\.exercise)
         saved += (archive.active?.exercises ?? []).map(\.exercise)
@@ -56,6 +57,111 @@ final class WorkoutStore {
 
     var cycleState: RevisionedDocumentState<TrainingCycleDocument> {
         archive.trainingCycle ?? RevisionedDocumentState(document: TrainingCycleDocument())
+    }
+
+    var savedTemplatesState: RevisionedDocumentState<SavedTrainingTemplatesDocument> {
+        archive.savedTemplates ?? RevisionedDocumentState(document: SavedTrainingTemplatesDocument())
+    }
+
+    @discardableResult
+    func saveTemplateSnapshot(name: String, replacing original: SavedTrainingTemplate? = nil) -> Bool {
+        var document = savedTemplatesState.document
+        let snapshot = SavedTrainingTemplate(id: original?.id ?? UUID(),
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines), days: archive.week,
+            structureVersion: archive.templateStructureVersion)
+        if let original {
+            guard let index = document.templates.firstIndex(where: { $0.id == original.id }),
+                  document.templates[index] == original else {
+                errorMessage = TrainingError.staleProgramEdit.localizedDescription
+                return false
+            }
+            document.templates[index] = snapshot
+        } else { document.templates.append(snapshot) }
+        guard document.isValid else {
+            errorMessage = "Укажи название до 80 символов. Можно сохранить до 20 шаблонов."
+            return false
+        }
+        var state = savedTemplatesState
+        state.edit(document)
+        return saveTemplatesState(state)
+    }
+
+    @discardableResult
+    func deleteTemplateSnapshot(_ original: SavedTrainingTemplate) -> Bool {
+        var state = savedTemplatesState
+        var document = state.document
+        guard document.templates.contains(original) else {
+            errorMessage = TrainingError.staleProgramEdit.localizedDescription
+            return false
+        }
+        document.templates.removeAll { $0.id == original.id }
+        state.edit(document)
+        return saveTemplatesState(state)
+    }
+
+    @discardableResult
+    func applyTemplateSnapshot(_ original: SavedTrainingTemplate, expected: [TrainingDay]) -> Bool {
+        guard savedTemplatesState.document.templates.contains(original), archive.week == expected else {
+            errorMessage = TrainingError.staleProgramEdit.localizedDescription
+            return false
+        }
+        return replaceTemplate(original.days, structureVersion: original.structureVersion)
+    }
+
+    @discardableResult
+    func saveTemplatesState(_ state: RevisionedDocumentState<SavedTrainingTemplatesDocument>) -> Bool {
+        guard state.isValid(documentIsValid: { $0.isValid }) else { return false }
+        if state == archive.savedTemplates { return true }
+        if let remote = state.conflict, remote != archive.savedTemplates?.conflict {
+            do { try backupTemplatesConflict(remote: remote) }
+            catch { errorMessage = "Не удалось сохранить обе версии шаблонов."; return false }
+        }
+        var changed = archive
+        changed.savedTemplates = state
+        return save(changed)
+    }
+
+    func backupTemplatesConflict(remote: RevisionedDocumentRecord<SavedTrainingTemplatesDocument>) throws {
+        let directory = fileURL.deletingLastPathComponent().appendingPathComponent("Conflicts", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let prefix = UUID().uuidString
+        try JSONEncoder().encode(archive).write(to: directory.appendingPathComponent("\(prefix)-local.json"), options: .atomic)
+        try JSONEncoder().encode(remote).write(to: directory.appendingPathComponent("\(prefix)-templates-server.json"), options: .atomic)
+    }
+
+    func creatineState(on key: String) -> RevisionedDocumentState<CreatineDayDocument> {
+        archive.creatineDays?[key] ?? RevisionedDocumentState(document: CreatineDayDocument(date: key))
+    }
+
+    @discardableResult
+    func setCreatineTaken(on date: Date, taken: Bool) -> Bool {
+        let key = trainingCalendar.dayKey(for: date)
+        var state = creatineState(on: key)
+        if (state.document.takenAt != nil) == taken { return true }
+        state.edit(CreatineDayDocument(date: key, takenAt: taken ? date : nil))
+        return saveCreatineState(state, on: key)
+    }
+
+    @discardableResult
+    func saveCreatineState(_ state: RevisionedDocumentState<CreatineDayDocument>, on key: String) -> Bool {
+        guard state.isValid(documentIsValid: { $0.isValid && $0.date == key }) else { return false }
+        if archive.creatineDays?[key] == state { return true }
+        if let remote = state.conflict, remote != archive.creatineDays?[key]?.conflict {
+            do { try backupCreatineConflict(remote: remote) }
+            catch { errorMessage = "Не удалось сохранить обе версии отметок креатина."; return false }
+        }
+        var changed = archive
+        if changed.creatineDays == nil { changed.creatineDays = [:] }
+        changed.creatineDays?[key] = state
+        return save(changed)
+    }
+
+    func backupCreatineConflict(remote: RevisionedDocumentRecord<CreatineDayDocument>) throws {
+        let directory = fileURL.deletingLastPathComponent().appendingPathComponent("Conflicts", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let prefix = UUID().uuidString
+        try JSONEncoder().encode(archive).write(to: directory.appendingPathComponent("\(prefix)-local.json"), options: .atomic)
+        try JSONEncoder().encode(remote).write(to: directory.appendingPathComponent("\(prefix)-creatine-server.json"), options: .atomic)
     }
 
     @discardableResult

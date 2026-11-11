@@ -474,6 +474,15 @@ struct WorkoutView: View {
                 }.buttonStyle(.plain).disabled(exercise.isSkipped)
                     .accessibilityLabel(set.isCompleted ? "Изменить подход \(index + 1)" : exercise.isSkipped ? "Подход \(index + 1) пропущен" : "Записать подход \(index + 1)")
             }
+            if !isLocked && exercise.sets.count > 1 {
+                Button(role: .destructive) {
+                    inputFocused = false
+                    setToRemove = set.id
+                } label: {
+                    Label("Удалить подход \(index + 1)", systemImage: "minus.circle")
+                        .font(.caption).frame(minHeight: 44)
+                }.buttonStyle(.plain).accessibilityIdentifier("workout.set.remove.\(index + 1)")
+            }
             if let previous = store.previousSet(for: exercise.exercise, index: index) {
                 if !isLocked && hasEmptyField {
                     Button {
