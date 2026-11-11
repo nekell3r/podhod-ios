@@ -2,6 +2,72 @@ import XCTest
 @testable import PodhodCore
 
 final class SavedTemplatesAndCreatineTests: XCTestCase {
+    func testCreatineAcknowledgesSerializedTimestampAfterRestart() throws {
+        let date = Date(timeIntervalSince1970: 1_794_420_000.123456)
+        let document = CreatineDayDocument(date: "2026-11-11", takenAt: date)
+        let original = RevisionedDocumentState(localDocument: document)
+        let bytes = try JSONEncoder().encode(original)
+        var restored = try JSONDecoder().decode(RevisionedDocumentState<CreatineDayDocument>.self, from: bytes)
+        let pending = try XCTUnwrap(restored.pending)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let transmittedDate = try XCTUnwrap(formatter.date(from: formatter.string(from: date)))
+        XCTAssertNotEqual(date, transmittedDate)
+        let remote = RevisionedDocumentRecord(revision: Int64(1),
+            document: CreatineDayDocument(date: document.date, takenAt: transmittedDate))
+
+        try restored.acknowledge(requestID: pending.requestID, record: remote)
+
+        XCTAssertNil(restored.pending)
+        XCTAssertEqual(restored.acknowledged, remote)
+        XCTAssertEqual(restored.document.takenAt, date)
+        XCTAssertTrue(restored.isValid(documentIsValid: { $0.isValid }))
+        try restored.receive(remote)
+        XCTAssertNil(restored.conflict)
+    }
+
+    func testCreatineAcknowledgmentStillRejectsDifferentMark() throws {
+        let date = Date(timeIntervalSince1970: 1_794_420_000.123456)
+        let document = CreatineDayDocument(date: "2026-11-11", takenAt: date)
+        var futureVersion = document
+        futureVersion.version = 2
+        let changed = [
+            CreatineDayDocument(date: document.date),
+            CreatineDayDocument(date: document.date, takenAt: date.addingTimeInterval(0.001)),
+            CreatineDayDocument(date: "2026-11-12", takenAt: date),
+            futureVersion,
+        ]
+        for other in changed {
+            var state = RevisionedDocumentState(localDocument: document)
+            let pending = try XCTUnwrap(state.pending)
+            XCTAssertNotEqual(document, other)
+            XCTAssertThrowsError(try state.acknowledge(requestID: pending.requestID,
+                record: .init(revision: 1, document: other)))
+            XCTAssertEqual(state.pending, pending)
+            XCTAssertNil(state.acknowledged)
+        }
+        XCTAssertNotEqual(CreatineDayDocument(date: document.date), document)
+    }
+
+    func testCreatineUndoDuringDeliveryRemainsPendingAfterSerializedAcknowledgment() throws {
+        let date = Date(timeIntervalSince1970: 1_794_420_000.123456)
+        let document = CreatineDayDocument(date: "2026-11-11", takenAt: date)
+        var state = RevisionedDocumentState(localDocument: document)
+        let sent = try XCTUnwrap(state.pending)
+        state.edit(CreatineDayDocument(date: document.date))
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let transmittedDate = try XCTUnwrap(formatter.date(from: formatter.string(from: date)))
+
+        try state.acknowledge(requestID: sent.requestID, record: .init(revision: 1,
+            document: CreatineDayDocument(date: document.date, takenAt: transmittedDate)))
+
+        XCTAssertNil(state.document.takenAt)
+        XCTAssertNil(state.pending?.document.takenAt)
+        XCTAssertEqual(state.pending?.expectedRevision, 1)
+        XCTAssertNotEqual(state.pending?.requestID, sent.requestID)
+    }
+
     private func location() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("TemplatesCreatine-\(UUID())/training.json")
     }

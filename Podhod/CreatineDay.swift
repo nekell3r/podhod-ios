@@ -13,6 +13,15 @@ struct CreatineDayDocument: Codable, Equatable {
 
     init(date: String, takenAt: Date? = nil) { self.date = date; self.takenAt = takenAt }
 
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        guard lhs.version == rhs.version, lhs.date == rhs.date else { return false }
+        guard let left = lhs.takenAt else { return rhs.takenAt == nil }
+        guard let right = rhs.takenAt else { return false }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: left) == formatter.string(from: right)
+    }
+
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
