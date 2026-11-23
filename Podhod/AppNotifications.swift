@@ -7,8 +7,17 @@ import UIKit
 
 @MainActor @Observable
 final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
-    nonisolated static let notificationIDs = ["dev.podhod.protein.morning", "dev.podhod.protein.evening"]
-    nonisolated static let creatineNotificationID = "dev.podhod.creatine.daily"
+    nonisolated private static let reminderHours = Array(stride(from: 9, through: 23, by: 2))
+    nonisolated private static let proteinIDs = reminderHours.map { hour in
+        switch hour {
+        case 9: "dev.podhod.protein.morning"
+        case 21: "dev.podhod.protein.evening"
+        default: "dev.podhod.protein.\(hour)"
+        }
+    }
+    nonisolated private static let creatineIDs = reminderHours.map { hour in
+        hour == 9 ? "dev.podhod.creatine.daily" : "dev.podhod.creatine.\(hour)"
+    }
     private(set) var creatineEnabled = false
     var creatineErrorMessage: String?
     @ObservationIgnored private let creatinePreferenceKey = "podhod.creatine-reminders.enabled"
@@ -39,10 +48,10 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
             return
         }
         if creatineEnabled && canNotify {
-            do { try await scheduleCreatineReminder(); creatineErrorMessage = nil }
+            do { try await scheduleCreatineReminders(); creatineErrorMessage = nil }
             catch { creatineErrorMessage = "Не удалось запланировать напоминание креатина. Повтори включение." }
         } else if !creatineEnabled {
-            center.removePendingNotificationRequests(withIdentifiers: [Self.creatineNotificationID])
+            center.removePendingNotificationRequests(withIdentifiers: Self.creatineIDs)
         }
         if enabled && canNotify {
             do {
@@ -56,7 +65,7 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
         } else if enabled {
             status = "Для напоминаний нужно разрешение на уведомления"
         } else {
-            center.removePendingNotificationRequests(withIdentifiers: Self.notificationIDs)
+            center.removePendingNotificationRequests(withIdentifiers: Self.proteinIDs)
             status = "Напоминания выключены"
         }
     }
@@ -82,7 +91,7 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
             UserDefaults.standard.set(true, forKey: preferenceKey)
             status = notificationStatus
         } catch {
-            center.removePendingNotificationRequests(withIdentifiers: Self.notificationIDs)
+            center.removePendingNotificationRequests(withIdentifiers: Self.proteinIDs)
             enabled = false
             UserDefaults.standard.set(false, forKey: preferenceKey)
             status = "Напоминания не включены"
@@ -92,8 +101,8 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
 
     func disable() async {
         guard !isBusy else { return }
-        center.removePendingNotificationRequests(withIdentifiers: Self.notificationIDs)
-        center.removeDeliveredNotifications(withIdentifiers: Self.notificationIDs)
+        center.removePendingNotificationRequests(withIdentifiers: Self.proteinIDs)
+        center.removeDeliveredNotifications(withIdentifiers: Self.proteinIDs)
         enabled = false
         UserDefaults.standard.set(false, forKey: preferenceKey)
         errorMessage = nil
@@ -115,11 +124,11 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
                 creatineErrorMessage = "Разреши уведомления в настройках устройства."
                 return
             }
-            try await scheduleCreatineReminder()
+            try await scheduleCreatineReminders()
             creatineEnabled = true
             UserDefaults.standard.set(true, forKey: creatinePreferenceKey)
         } catch {
-            center.removePendingNotificationRequests(withIdentifiers: [Self.creatineNotificationID])
+            center.removePendingNotificationRequests(withIdentifiers: Self.creatineIDs)
             creatineEnabled = false
             UserDefaults.standard.set(false, forKey: creatinePreferenceKey)
             creatineErrorMessage = "Не удалось включить напоминание. Попробуй ещё раз."
@@ -128,24 +137,18 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
 
     func disableCreatine() async {
         guard !isBusy else { return }
-        center.removePendingNotificationRequests(withIdentifiers: [Self.creatineNotificationID])
-        center.removeDeliveredNotifications(withIdentifiers: [Self.creatineNotificationID])
+        center.removePendingNotificationRequests(withIdentifiers: Self.creatineIDs)
+        center.removeDeliveredNotifications(withIdentifiers: Self.creatineIDs)
         creatineEnabled = false
         UserDefaults.standard.set(false, forKey: creatinePreferenceKey)
         creatineErrorMessage = nil
     }
 
-    private func scheduleCreatineReminder() async throws {
-        let content = UNMutableNotificationContent()
-        content.title = "Креатин"
-        content.body = "Отметь приём креатина в разделе «Сегодня»."
-        content.sound = .default
-        var components = DateComponents()
-        components.hour = 9
-        components.minute = 30
-        components.second = 0
-        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
-        try await center.add(UNNotificationRequest(identifier: Self.creatineNotificationID, content: content, trigger: trigger))
+    private func scheduleCreatineReminders() async throws {
+        for (hour, id) in zip(Self.reminderHours, Self.creatineIDs) {
+            try await center.add(Self.dailyReminder(id: id, hour: hour, title: "Креатин",
+                body: "Отметь приём креатина в разделе «Сегодня»."))
+        }
     }
 
     private var canNotify: Bool {
@@ -154,33 +157,34 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
 
     private var notificationStatus: String {
         authorizationStatus == .provisional
-            ? "Ежедневно в 09:30 и 21:30 · тихая доставка"
-            : "Ежедневно в 09:30 и 21:30"
+            ? "Каждые 2 часа с 09:30 до 23:30 · тихая доставка"
+            : "Каждые 2 часа с 09:30 до 23:30"
     }
 
     private func scheduleReminders() async throws {
-        for request in Self.dailyNotificationRequests() { try await center.add(request) }
+        for (hour, id) in zip(Self.reminderHours, Self.proteinIDs) {
+            let title = hour < 21 ? "Протеин — утренний приём" : "Протеин — вечерний приём"
+            try await center.add(Self.dailyReminder(id: id, hour: hour, title: title,
+                body: "Отметь приём протеина в разделе «Сегодня»."))
+        }
     }
 
-    private static func dailyNotificationRequests() -> [UNNotificationRequest] {
-        [9, 21].enumerated().map { index, hour in
-            let content = UNMutableNotificationContent()
-            content.title = index == 0 ? "Протеин — утро" : "Протеин — вечер"
-            content.body = "Отметь приём протеина в разделе «Сегодня»."
-            content.sound = .default
-            var components = DateComponents()
-            components.hour = hour
-            components.minute = 30
-            components.second = 0
-            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
-            return UNNotificationRequest(identifier: notificationIDs[index], content: content, trigger: trigger)
-        }
+    private static func dailyReminder(id: String, hour: Int, title: String, body: String) -> UNNotificationRequest {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let components = DateComponents(hour: hour, minute: 30, second: 0)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+        return UNNotificationRequest(identifier: id, content: content, trigger: trigger)
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler((Self.notificationIDs.contains(notification.request.identifier) || notification.request.identifier == Self.creatineNotificationID) ? [.banner, .list, .sound] : [])
+        let id = notification.request.identifier
+        let shouldPresent = Self.proteinIDs.contains(id) || Self.creatineIDs.contains(id) || id == WorkoutRestPresentation.notificationID
+        completionHandler(shouldPresent ? [.banner, .list, .sound] : [])
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,

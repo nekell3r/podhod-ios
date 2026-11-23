@@ -22,7 +22,7 @@ struct CreatineTodayCard: View {
                     }
                 }.tint(.gymLime).disabled(store.loadFailed || store.accountStorageError != nil)
                     .accessibilityIdentifier("creatine.taken")
-                Text(reminders.creatineEnabled ? "Напоминание ежедневно в 09:30" : "Напоминание выключено")
+                Text(reminders.creatineEnabled ? "Каждые 2 часа с 09:30 до 23:30" : "Напоминание выключено")
                     .font(.caption).foregroundStyle(Color.gymMuted)
                 if reminders.authorizationStatus == .denied {
                     #if os(iOS)

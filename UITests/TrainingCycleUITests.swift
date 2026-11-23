@@ -2,6 +2,57 @@ import XCTest
 
 @MainActor
 final class TrainingCycleUITests: XCTestCase {
+    func testQuickSupersetAndRestNotifications() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(ru)", "-AppleLocale", "ru_RU"]
+        app.launch()
+        defer { app.terminate() }
+        let resume = app.buttons["Продолжить тренировку"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        resume.tap()
+
+        let quickSuperset = app.buttons["workout.superset.quick"]
+        XCTAssertTrue(quickSuperset.waitForExistence(timeout: 5))
+        capture("quick-superset-action", app: app)
+        quickSuperset.tap()
+        let partner = app.buttons["QA Тяга"]
+        XCTAssertTrue(partner.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["QA Другой объём"].exists)
+        partner.tap()
+        XCTAssertTrue(app.staticTexts["Суперсет · круг 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Отдых после круга: 15 с"].exists)
+        capture("quick-superset-created", app: app)
+
+        let firstSet = app.buttons["Записать подход 1"]
+        reveal(firstSet, in: app)
+        firstSet.tap()
+        XCTAssertTrue(app.staticTexts["QA Тяга"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Закончить отдых"].exists)
+        reveal(firstSet, in: app)
+        firstSet.tap()
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["Разрешить", "Allow"])).firstMatch
+        if allow.waitForExistence(timeout: 3) { allow.tap() }
+        let notification = springboard.staticTexts["Отдых окончен"].firstMatch
+        XCTAssertTrue(notification.waitForExistence(timeout: 25))
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+        capture("rest-foreground-notification", app: app)
+        app.buttons["Закончить отдых"].tap()
+
+        let secondSet = app.buttons["Записать подход 2"]
+        reveal(secondSet, in: app)
+        secondSet.tap()
+        XCTAssertTrue(app.staticTexts["QA Тяга"].waitForExistence(timeout: 5))
+        reveal(secondSet, in: app)
+        secondSet.tap()
+        XCTAssertTrue(app.buttons["Закончить отдых"].waitForExistence(timeout: 5))
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(notification.waitForExistence(timeout: 25))
+        capture("rest-background-notification", app: springboard)
+    }
+
     func testSupersetActionsAndSavedCycleDay() {
         continueAfterFailure = false
         let app = XCUIApplication()

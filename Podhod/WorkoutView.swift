@@ -156,6 +156,13 @@ struct WorkoutView: View {
 
     private func training(_ session: WorkoutSession) -> some View {
         let exercise = session.exercises[session.currentExercise]
+        let candidates = session.supersetCandidates
+        let remainingSets = exercise.sets.count(where: { !$0.isCompleted })
+        let partners = candidates.contains(where: { $0.id == exercise.id }) ? candidates.filter {
+            $0.id != exercise.id && $0.sets.count(where: { !$0.isCompleted }) == remainingSets
+        } : []
+        let exerciseHeaderLayout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 14))
         let actionsLayout = dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))
         let overviewLayout = dynamicTypeSize.isAccessibilitySize
@@ -201,7 +208,7 @@ struct WorkoutView: View {
                             }.foregroundStyle(Color.gymLime).padding(.vertical, 8)
                         }
                     }
-                    HStack(alignment: .top, spacing: 14) {
+                    exerciseHeaderLayout {
                         if !dynamicTypeSize.isAccessibilitySize {
                             ExerciseArt(kind: ExerciseCatalog.bundled.illustration(for: exercise.exercise))
                             .frame(width: 48, height: 48)
@@ -213,6 +220,22 @@ struct WorkoutView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                             Text("\(exercise.exercise.muscle) · \(session.currentExercise + 1) из \(session.exercises.count)")
                                 .font(.subheadline).foregroundStyle(Color.gymMuted)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        if !partners.isEmpty {
+                            Menu {
+                                Section("Добавить в суперсет") {
+                                    ForEach(partners) { partner in
+                                        Button(partner.exercise.name) {
+                                            inputFocused = false
+                                            store.createActiveSuperset(sessionID: session.id, expectedExercises: [exercise, partner],
+                                                restSeconds: exercise.restSeconds)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Text("Суперсет").fixedSize(horizontal: true, vertical: false).frame(minHeight: 44)
+                            }.font(.subheadline.weight(.semibold)).buttonStyle(.bordered).controlSize(.small)
+                                .accessibilityIdentifier("workout.superset.quick")
                         }
                     }
                     actionsLayout {
@@ -651,7 +674,7 @@ private struct WorkoutRestSettings: View {
                             .disabled(restPresentation.isRequestingPermission).accessibilityIdentifier("rest.notification.enable")
                     }
                     Text(restPresentation.notificationStatus).font(.caption).foregroundStyle(Color.gymMuted)
-                } header: { Text("Вне приложения") }
+                } header: { Text("Уведомления и Live Activity") }
                 footer: { Text("На экране блокировки показывается только таймер. Действия Live Activity открывают «Подход». Эти настройки сохраняются сразу.") }
             }
             .navigationTitle("Отдых")

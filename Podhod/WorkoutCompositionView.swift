@@ -141,10 +141,7 @@ private struct WorkoutSupersetPicker: View {
     @State private var rest = 90
     @State private var error: String?
 
-    private var available: [SessionExercise] {
-        let members = Set((session.supersets ?? []).filter { !$0.isClosed }.flatMap(\.exerciseIDs))
-        return session.exercises.filter { !$0.isResolved && !members.contains($0.id) }
-    }
+    private var available: [SessionExercise] { session.supersetCandidates }
 
     var body: some View {
         NavigationStack {

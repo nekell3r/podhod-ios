@@ -59,6 +59,13 @@ extension TrainingWeek {
 }
 
 extension WorkoutSession {
+    var supersetCandidates: [SessionExercise] {
+        let groups = supersets ?? []
+        guard groups.count < 50 else { return [] }
+        let members = Set(groups.filter { !$0.isClosed }.flatMap(\.exerciseIDs))
+        return exercises.filter { !$0.isResolved && !members.contains($0.id) }
+    }
+
     var hasValidStructure: Bool {
         guard (0...1).contains(structureVersion ?? 0), context?.isValid ?? true else { return false }
         let groups = supersets ?? []

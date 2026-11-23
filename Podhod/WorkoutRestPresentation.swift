@@ -34,6 +34,7 @@ final class WorkoutRestPresentation {
     @ObservationIgnored private var latest: WorkoutRestPresentationState?
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var scheduledNotificationIdentity: String?
     @ObservationIgnored private var platformTask: Task<Void, Never>?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
     private let liveKey = "podhod.rest.live-activity.enabled"
@@ -42,7 +43,7 @@ final class WorkoutRestPresentation {
 
     init() {
         liveEnabled = UserDefaults.standard.object(forKey: "podhod.rest.live-activity.enabled") as? Bool ?? true
-        notificationsEnabled = UserDefaults.standard.bool(forKey: "podhod.rest.notification.enabled")
+        notificationsEnabled = UserDefaults.standard.object(forKey: "podhod.rest.notification.enabled") as? Bool ?? true
         if !liveEnabled { liveStatus = "Live Activity выключены" }
         if notificationsEnabled { notificationStatus = "Уведомление включено" }
     }
@@ -141,20 +142,29 @@ final class WorkoutRestPresentation {
     }
 
     private func updateNotification(_ snapshot: WorkoutRestPresentationState?, operation: UUID) async {
-        center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID])
-        center.removeDeliveredNotifications(withIdentifiers: [Self.notificationID])
+        if !notificationsEnabled || snapshot == nil ||
+            (scheduledNotificationIdentity != nil && scheduledNotificationIdentity != snapshot?.identity) {
+            center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID])
+            center.removeDeliveredNotifications(withIdentifiers: [Self.notificationID])
+            scheduledNotificationIdentity = nil
+        }
         guard notificationsEnabled else { notificationStatus = "Уведомление выключено"; return }
+        guard let snapshot else { notificationStatus = "Нет текущего отдыха"; return }
         let settings = await center.notificationSettings()
         guard generation == operation else { return }
+        // Leave the request in place when the countdown ends so iOS can deliver it.
+        guard snapshot.content.deadline > Date() else { notificationStatus = "Отдых окончен"; return }
+        if settings.authorizationStatus == .notDetermined {
+            if foreground { await enableNotifications() }
+            return
+        }
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+            scheduledNotificationIdentity = nil
             notificationStatus = "Уведомления запрещены в настройках iOS"
             return
         }
-        guard let snapshot, snapshot.content.deadline > Date(),
-              let url = snapshot.attributes.link(.open, deadline: snapshot.content.deadline) else {
-            notificationStatus = "Нет текущего отдыха"
-            return
-        }
+        guard scheduledNotificationIdentity != snapshot.identity,
+              let url = snapshot.attributes.link(.open, deadline: snapshot.content.deadline) else { return }
         let content = UNMutableNotificationContent()
         content.title = "Отдых окончен"
         content.body = "Можно продолжать тренировку."
@@ -163,11 +173,8 @@ final class WorkoutRestPresentation {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, snapshot.content.deadline.timeIntervalSinceNow), repeats: false)
         do {
             try await center.add(UNNotificationRequest(identifier: Self.notificationID, content: content, trigger: trigger))
-            guard generation == operation else {
-                center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID])
-                return
-            }
-            notificationStatus = "Уведомление запланировано на конец отдыха"
+            scheduledNotificationIdentity = snapshot.identity
+            if generation == operation { notificationStatus = "Уведомление запланировано на конец отдыха" }
         } catch { if generation == operation { notificationStatus = "Не удалось запланировать уведомление. Повтори включение." } }
     }
 }

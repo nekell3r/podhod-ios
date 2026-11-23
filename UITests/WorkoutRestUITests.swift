@@ -69,16 +69,14 @@ final class WorkoutRestUITests: XCTestCase {
         resume.tap()
         app.buttons["Действия тренировки"].tap()
         app.buttons["Настроить отдых"].tap()
-        XCTAssertTrue(app.buttons["rest.notification.enable"].waitForExistence(timeout: 5))
-        app.buttons["rest.notification.enable"].tap()
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allow = springboard.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["Разрешить", "Allow"])).firstMatch
-        if allow.waitForExistence(timeout: 3) { allow.tap() }
         XCTAssertTrue(app.buttons["Выключить уведомление отдыха"].waitForExistence(timeout: 5))
         capture("ios09-rest-settings", app: app)
         app.navigationBars["Отдых"].buttons["Сохранить"].tap()
         reveal(app.buttons["Записать подход 2"], in: app)
         app.buttons["Записать подход 2"].tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["Разрешить", "Allow"])).firstMatch
+        if allow.waitForExistence(timeout: 3) { allow.tap() }
         XCTAssertTrue(app.buttons["Закончить отдых"].waitForExistence(timeout: 5))
         capture("ios09-active-rest", app: app)
         XCUIDevice.shared.press(.home)
