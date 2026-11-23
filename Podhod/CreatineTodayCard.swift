@@ -32,10 +32,7 @@ struct CreatineTodayCard: View {
                     #endif
                 } else {
                     Button(reminders.creatineEnabled ? "Выключить напоминание" : "Включить напоминание") {
-                        Task {
-                            if reminders.creatineEnabled { await reminders.disableCreatine() }
-                            else { await reminders.enableCreatine() }
-                        }
+                        Task { await reminders.setEnabled(!reminders.creatineEnabled, for: .creatine) }
                     }.font(.subheadline.weight(.semibold)).disabled(reminders.isBusy)
                 }
                 if let error = reminders.creatineErrorMessage {

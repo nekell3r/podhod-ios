@@ -20,7 +20,7 @@ struct PodhodApp: App {
     @State private var workspaceRevision = UUID()
     @Environment(\.scenePhase) private var scenePhase
 
-    private var restWorkspaceID: String? {
+    private var verifiedWorkspaceID: String? {
         guard workspaces.errorMessage == nil else { return nil }
         if auth.signedIn {
             guard let verifiedID = auth.verifiedAccountID, verifiedID == workspaces.accountID else { return nil }
@@ -29,7 +29,24 @@ struct PodhodApp: App {
     }
 
     private var restSnapshot: WorkoutRestPresentationState? {
-        WorkoutRestPresentationState(archive: store.archive, workspaceID: restWorkspaceID)
+        WorkoutRestPresentationState(archive: store.archive, workspaceID: verifiedWorkspaceID)
+    }
+
+    private var supplementMutes: [SupplementReminderSchedule.Series: Date]? {
+        guard verifiedWorkspaceID != nil else { return nil }
+        let now = Date()
+        let creatineCalendar = store.trainingCalendar
+        let creatine = store.creatineState(on: creatineCalendar.dayKey(for: now)).document
+        let proteinDay = protein.day(on: now)
+        let proteinCalendar = TrainingCalendar(timezone: TimeZone.autoupdatingCurrent.identifier)
+        var mutes: [SupplementReminderSchedule.Series: Date] = [:]
+        if creatine.takenAt != nil {
+            mutes[.creatine] = creatineCalendar.calendar.dateInterval(of: .day, for: now)?.end
+        }
+        let proteinDayEnd = proteinCalendar.calendar.dateInterval(of: .day, for: now)?.end
+        if proteinDay.isTaken(.morning) { mutes[.proteinMorning] = proteinDayEnd }
+        if proteinDay.isTaken(.evening) { mutes[.proteinEvening] = proteinDayEnd }
+        return mutes
     }
 
     init() {
@@ -67,7 +84,7 @@ struct PodhodApp: App {
         WindowGroup {
             RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition,
                 diary: diary, nutritionSync: nutritionSync, bodyProgress: bodyProgress,
-                restPresentation: restPresentation, restWorkspaceID: restWorkspaceID, knowledge: knowledge)
+                restPresentation: restPresentation, restWorkspaceID: verifiedWorkspaceID, knowledge: knowledge)
                 .id(workspaceRevision)
                 .onAppear {
                     sync.accountDiscovered = { switchAccount(to: $0) }
@@ -75,7 +92,11 @@ struct PodhodApp: App {
                     restPresentation.synchronize(restSnapshot, foreground: scenePhase == .active)
                 }
                 .onChange(of: restSnapshot) { _, state in restPresentation.synchronize(state, foreground: scenePhase == .active) }
-                .onChange(of: scenePhase) { _, phase in restPresentation.synchronize(restSnapshot, foreground: phase == .active) }
+                .onChange(of: supplementMutes, initial: true) { _, mutes in reminders.synchronizeSupplements(mutedUntil: mutes) }
+                .onChange(of: scenePhase) { _, phase in
+                    restPresentation.synchronize(restSnapshot, foreground: phase == .active)
+                    if phase == .active { reminders.synchronizeSupplements(mutedUntil: supplementMutes) }
+                }
                 .onChange(of: auth.sessionID) { _, _ in
                     if auth.signedIn {
                         bodyProgress.retire()
@@ -87,6 +108,9 @@ struct PodhodApp: App {
                     if !signedIn { _ = switchAccount(to: nil) }
                 }
                 #if os(iOS)
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+                    reminders.synchronizeSupplements(mutedUntil: supplementMutes)
+                }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
                     if bodyProgress.loadFailed {
                         let wasRetired = bodyProgress.isRetired

@@ -6,7 +6,6 @@ import UIKit
 struct ProteinTodayCard: View {
     @Bindable var tracker: ProteinTracker
     @Bindable var reminders: AppNotifications
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { _ in
@@ -47,12 +46,12 @@ struct ProteinTodayCard: View {
                         #endif
                     } else if !reminders.enabled || reminders.authorizationStatus == .notDetermined {
                         Button {
-                            Task { await reminders.enable() }
+                            Task { await reminders.setEnabled(true, for: .protein) }
                         } label: { Label("Включить напоминания", systemImage: "bell.badge") }
                             .font(.subheadline.weight(.semibold)).disabled(reminders.isBusy)
                     }
                     if reminders.enabled {
-                        Button("Выключить напоминания") { Task { await reminders.disable() } }
+                        Button("Выключить напоминания") { Task { await reminders.setEnabled(false, for: .protein) } }
                             .font(.caption).foregroundStyle(Color.gymMuted).disabled(reminders.isBusy)
                     }
                     if reminders.isBusy { SwiftUI.ProgressView().controlSize(.small) }
@@ -61,10 +60,6 @@ struct ProteinTodayCard: View {
                     }
                 }
             }.modifier(GymCard())
-        }
-        .task { await reminders.refreshStatus() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await reminders.refreshStatus() } }
         }
     }
 }
