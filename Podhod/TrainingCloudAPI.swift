@@ -96,10 +96,23 @@ struct TrainingCloudAPI {
         return result.sessions
     }
 
-    func saveHistory(_ session: WorkoutSession, removedSetIDs: [UUID]) async throws {
+    func saveHistory(_ session: WorkoutSession, removedSetIDs: [UUID]) async throws -> WorkoutSession {
         struct Change: Encodable { var requestID = UUID(); var session: WorkoutSession; var removedSetIDs: [UUID]? }
         let change = Change(session: session, removedSetIDs: removedSetIDs.isEmpty ? nil : removedSetIDs)
-        let _: WorkoutSession = try await request("PUT", path: "v1/history/\(session.id.uuidString)", body: Self.encode(change))
+        return try await request("PUT", path: "v1/history/\(session.id.uuidString)", body: Self.encode(change))
+    }
+
+    func historyRecovery(_ id: UUID) async throws -> HistoryRecoveryRecord {
+        let record: HistoryRecoveryRecord = try await request("GET", path: "v1/history/\(id.uuidString)/recovery")
+        guard record.session.id == id, record.session.finishedAt != nil, record.session.hasValidStructure,
+              record.version.count == 64, record.version.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw CloudDocumentError.invalidResponse
+        }
+        return record
+    }
+
+    func recoverHistory(_ change: HistoryRecoveryWrite) async throws -> HistoryRecoveryRecord {
+        try await request("PUT", path: "v1/history/\(change.session.id.uuidString)/recovery", body: Self.encode(change))
     }
 
     func active() async throws -> ActiveWorkoutRecord {
@@ -168,8 +181,6 @@ struct TrainingCloudAPI {
     private func request<Response: Decodable>(_ method: String, path: String, body: Data? = nil,
                                               query: [URLQueryItem] = []) async throws -> Response {
         guard auth.signedIn, auth.sessionID == sessionID else { throw CancellationError() }
-        let token = try await auth.accessToken()
-        guard auth.signedIn, auth.sessionID == sessionID else { throw CancellationError() }
         guard var components = URLComponents(url: auth.serverURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
             throw URLError(.badURL)
         }
@@ -179,18 +190,24 @@ struct TrainingCloudAPI {
         request.httpMethod = method
         request.timeoutInterval = 20
         request.httpBody = body
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        let (data, response) = try await Self.http.data(for: request)
-        guard auth.signedIn, auth.sessionID == sessionID else { throw CancellationError() }
-        guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        guard (200..<300).contains(response.statusCode) else {
-            let detail = try? JSONDecoder().decode(TrainingCloudErrorEnvelope.self, from: data).error
-            throw TrainingCloudFailure(status: response.statusCode, code: detail?.code ?? "http_error",
-                                       message: detail?.message ?? "Сервер вернул ошибку \(response.statusCode).", currentRevision: detail?.currentRevision)
+        for attempt in 0...1 {
+            let token = try await auth.accessToken(forceRefresh: attempt > 0)
+            guard auth.signedIn, auth.sessionID == sessionID else { throw CancellationError() }
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await Self.http.data(for: request)
+            guard auth.signedIn, auth.sessionID == sessionID else { throw CancellationError() }
+            guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+            if response.statusCode == 401 && attempt == 0 { continue }
+            guard (200..<300).contains(response.statusCode) else {
+                let detail = try? JSONDecoder().decode(TrainingCloudErrorEnvelope.self, from: data).error
+                throw TrainingCloudFailure(status: response.statusCode, code: detail?.code ?? "http_error",
+                                           message: detail?.message ?? "Сервер вернул ошибку \(response.statusCode).", currentRevision: detail?.currentRevision)
+            }
+            return try Self.decode(Response.self, from: data)
         }
-        return try Self.decode(Response.self, from: data)
+        throw URLError(.userAuthenticationRequired)
     }
 
     static func encode<T: Encodable>(_ value: T) throws -> Data {

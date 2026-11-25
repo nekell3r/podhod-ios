@@ -100,4 +100,45 @@ final class SynchronizationSafetyTests: XCTestCase {
         XCTAssertFalse(store.restoreActiveWorkout(invalid))
         XCTAssertEqual(store.archive, before)
     }
+
+    @MainActor func testOfflineFinishSurvivesReopenAndConflictingServerHistory() async throws {
+        let root = location().deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = AccountWorkspaces(rootURL: root)
+        let directory = try account.prepare(accountID: "owner", legacyAccountID: nil)
+        let url = directory.appending(path: "training.json")
+        try account.commit(accountID: "owner")
+        let workout = WorkoutStore(fileURL: url)
+        let startedAt = try XCTUnwrap(calendar.date(from: "2026-11-24"))
+        XCTAssertTrue(workout.start(day: TrainingDay.exampleWeek()[0], date: startedAt))
+        let exercise = try XCTUnwrap(workout.archive.active?.exercises.first)
+        let set = try XCTUnwrap(exercise.sets.first)
+        workout.updateSet(exerciseID: exercise.id, setID: set.id, reps: "8", weight: "65", date: startedAt)
+        XCTAssertTrue(workout.toggleSet(exerciseID: exercise.id, setID: set.id, date: startedAt))
+        XCTAssertTrue(workout.finish(allowPartial: true, date: startedAt.addingTimeInterval(120)))
+        let finished = try XCTUnwrap(workout.archive.history.first)
+
+        let reopened = AccountWorkspaces(rootURL: root)
+        XCTAssertEqual(reopened.accountID, "owner")
+        let local = WorkoutStore(fileURL: reopened.currentDirectory.appending(path: "training.json"))
+        XCTAssertEqual(local.archive.history, [finished])
+        XCTAssertNil(local.archive.active)
+
+        var conflicting = finished
+        conflicting.exercises[0].sets[0].weight = "40"
+        var unrelated = conflicting
+        unrelated.id = UUID()
+        XCTAssertTrue(local.mergeHistory([conflicting, unrelated]))
+        XCTAssertEqual(local.archive.history.first { $0.id == finished.id }, finished)
+        XCTAssertEqual(WorkoutStore(fileURL: url).archive.history.count, 2)
+
+        var staleChoice = finished
+        staleChoice.title = "Уже не совпадает"
+        XCTAssertFalse(local.acceptRecoveredHistory(conflicting, replacing: staleChoice))
+        XCTAssertEqual(local.archive.history.first { $0.id == finished.id }, finished)
+        XCTAssertTrue(local.acceptRecoveredHistory(conflicting, replacing: finished))
+        let recovered = WorkoutStore(fileURL: url)
+        XCTAssertEqual(recovered.archive.history.first { $0.id == finished.id }, conflicting)
+        XCTAssertTrue(recovered.archive.history.contains(unrelated))
+    }
 }

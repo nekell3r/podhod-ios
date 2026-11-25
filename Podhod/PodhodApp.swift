@@ -20,11 +20,17 @@ struct PodhodApp: App {
     @State private var workspaceRevision = UUID()
     @Environment(\.scenePhase) private var scenePhase
 
+    private var archiveAccountID: String? {
+        workspaces.accountID ?? (workspaces.isLegacy ? sync.accountID : nil)
+    }
+
+    private var archiveAccessible: Bool {
+        archiveAccountID.map { $0 == auth.verifiedAccountID } ?? true
+    }
+
     private var verifiedWorkspaceID: String? {
-        guard workspaces.errorMessage == nil else { return nil }
-        if auth.signedIn {
-            guard let verifiedID = auth.verifiedAccountID, verifiedID == workspaces.accountID else { return nil }
-        } else if workspaces.accountID != nil { return nil }
+        guard workspaces.errorMessage == nil, archiveAccessible else { return nil }
+        if auth.signedIn && (auth.verifiedAccountID == nil || auth.verifiedAccountID != archiveAccountID) { return nil }
         return workspaces.storageID
     }
 
@@ -61,8 +67,10 @@ struct PodhodApp: App {
             accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
         let knowledge = KnowledgeBookmarks(fileURL: workspaces.currentDirectory.appending(path: "knowledge-bookmarks.json"),
             accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
-        if (auth.signedIn && auth.verifiedAccountID != workspaces.accountID)
-            || (!auth.signedIn && workspaces.accountID != nil) { bodyProgress.retire(); knowledge.retire() }
+        if (workspaces.accountID != nil || auth.signedIn) && auth.verifiedAccountID != workspaces.accountID {
+            bodyProgress.retire()
+            knowledge.retire()
+        }
         store.accountStorageError = workspaces.errorMessage
         protein.accountStorageError = workspaces.errorMessage
         nutrition.accountStorageError = workspaces.errorMessage
@@ -82,13 +90,33 @@ struct PodhodApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition,
-                diary: diary, nutritionSync: nutritionSync, bodyProgress: bodyProgress,
-                restPresentation: restPresentation, restWorkspaceID: verifiedWorkspaceID, knowledge: knowledge)
+            Group {
+                if archiveAccessible {
+                    RootView(store: store, auth: auth, sync: sync, protein: protein, reminders: reminders, nutrition: nutrition,
+                        diary: diary, nutritionSync: nutritionSync, bodyProgress: bodyProgress,
+                        restPresentation: restPresentation, restWorkspaceID: verifiedWorkspaceID, knowledge: knowledge)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            Text("Войди в прежний аккаунт, чтобы открыть сохранённые тренировки.")
+                                .font(.headline)
+                            CloudAccountView(auth: auth)
+                            if let error = store.errorMessage { Text(error).foregroundStyle(Color.gymMuted) }
+                        }.padding(22)
+                    }.background(Color.gymBackground)
+                        .task(id: scenePhase) {
+                            guard scenePhase == .active else { return }
+                            while !Task.isCancelled {
+                                await sync.synchronize()
+                                do { try await Task.sleep(for: .seconds(5)) }
+                                catch { return }
+                            }
+                        }
+                }
+            }
                 .id(workspaceRevision)
                 .onAppear {
                     sync.accountDiscovered = { switchAccount(to: $0) }
-                    if !auth.signedIn && workspaces.accountID != nil { _ = switchAccount(to: nil) }
                     restPresentation.synchronize(restSnapshot, foreground: scenePhase == .active)
                 }
                 .onChange(of: restSnapshot) { _, state in restPresentation.synchronize(state, foreground: scenePhase == .active) }
@@ -98,14 +126,10 @@ struct PodhodApp: App {
                     if phase == .active { reminders.synchronizeSupplements(mutedUntil: supplementMutes) }
                 }
                 .onChange(of: auth.sessionID) { _, _ in
-                    if auth.signedIn {
-                        bodyProgress.retire()
-                        knowledge.retire()
-                        restPresentation.synchronize(nil, foreground: scenePhase == .active)
-                    }
-                }
-                .onChange(of: auth.signedIn) { _, signedIn in
-                    if !signedIn { _ = switchAccount(to: nil) }
+                    bodyProgress.retire()
+                    knowledge.retire()
+                    restPresentation.synchronize(nil, foreground: scenePhase == .active)
+                    if !auth.signedIn { _ = switchAccount(to: nil) }
                 }
                 #if os(iOS)
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
@@ -116,7 +140,7 @@ struct PodhodApp: App {
                         let wasRetired = bodyProgress.isRetired
                         let restored = BodyProgressStore(fileURL: workspaces.currentDirectory.appending(path: "body-progress.json"),
                             accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
-                        if wasRetired || (auth.signedIn && auth.verifiedAccountID != workspaces.accountID) {
+                        if wasRetired || !archiveAccessible {
                             restored.retire()
                         }
                         bodyProgress.retire()
@@ -126,13 +150,9 @@ struct PodhodApp: App {
                         let wasRetired = knowledge.isRetired
                         let restored = KnowledgeBookmarks(fileURL: workspaces.currentDirectory.appending(path: "knowledge-bookmarks.json"),
                             accountID: workspaces.accountID, accountStorageError: workspaces.errorMessage)
-                        if wasRetired || (auth.signedIn && auth.verifiedAccountID != workspaces.accountID) { restored.retire() }
+                        if wasRetired || !archiveAccessible { restored.retire() }
                         knowledge.retire()
                         knowledge = restored
-                    }
-                    if !auth.signedIn && workspaces.accountID != nil {
-                        bodyProgress.retire()
-                        _ = switchAccount(to: nil)
                     }
                 }
                 #endif
@@ -149,14 +169,24 @@ struct PodhodApp: App {
     }
 
     private func switchAccount(to accountID: String?) -> Bool {
-        if !workspaces.isLegacy && workspaces.accountID == accountID && !bodyProgress.isRetired && !knowledge.isRetired { return false }
+        if !workspaces.isLegacy && workspaces.accountID == accountID {
+            if bodyProgress.isRetired {
+                bodyProgress = BodyProgressStore(fileURL: bodyProgress.fileURL, accountID: accountID, accountStorageError: workspaces.errorMessage)
+            }
+            if knowledge.isRetired {
+                knowledge = KnowledgeBookmarks(fileURL: knowledge.fileURL, accountID: accountID, accountStorageError: workspaces.errorMessage)
+            }
+            return false
+        }
         bodyProgress.retire()
         knowledge.retire()
         restPresentation.synchronize(nil, foreground: scenePhase == .active)
         do {
-            guard !store.loadFailed, !protein.loadFailed, !nutrition.loadFailed, !diary.loadFailed,
-                  !bodyProgress.loadFailed, !knowledge.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
-            guard store.pauseTimingForAccountSwitch() else { throw TrainingError.invalidArchive }
+            if workspaces.isLegacy || workspaces.accountID == nil {
+                guard !store.loadFailed, !protein.loadFailed, !nutrition.loadFailed, !diary.loadFailed,
+                      !bodyProgress.loadFailed, !knowledge.loadFailed, sync.storageReady else { throw TrainingError.invalidArchive }
+            }
+            if !store.loadFailed && !store.pauseTimingForAccountSwitch() { throw TrainingError.invalidArchive }
             let directory = try workspaces.prepare(accountID: accountID, legacyAccountID: sync.accountID)
             let nextStore = WorkoutStore(fileURL: directory.appending(path: "training.json"))
             let nextProtein = ProteinTracker(fileURL: directory.appending(path: "protein.json"))
@@ -165,7 +195,7 @@ struct PodhodApp: App {
             let nextBody = BodyProgressStore(fileURL: directory.appending(path: "body-progress.json"), accountID: accountID)
             let nextKnowledge = KnowledgeBookmarks(fileURL: directory.appending(path: "knowledge-bookmarks.json"), accountID: accountID)
             let nextSync = CloudSynchronization(store: nextStore, auth: auth, protein: nextProtein)
-            guard !nextStore.loadFailed, !nextProtein.loadFailed, !nextNutrition.loadFailed, !nextBody.loadFailed, !nextKnowledge.loadFailed, nextSync.storageReady,
+            guard !nextStore.loadFailed, !nextProtein.loadFailed, nextSync.storageReady,
                   nextSync.accountID == nil || nextSync.accountID == accountID,
                   nextDiary.archive.accountID == nil || nextDiary.archive.accountID == accountID else { throw TrainingError.invalidArchive }
             try workspaces.commit(accountID: accountID)
@@ -292,6 +322,9 @@ struct CloudSettingsView: View {
     @Bindable var auth: CloudAuthentication
     @Bindable var sync: CloudSynchronization
     @Environment(\.dismiss) private var dismiss
+    @State private var reviewedHistory: WorkoutSession?
+    @State private var confirmHistoryChoice = false
+    @State private var useServerHistory = false
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -306,15 +339,34 @@ struct CloudSettingsView: View {
                         }
                         if let conflict = sync.conflict {
                             Text(conflict.message).font(.subheadline).lineSpacing(3)
-                            Text("Перед выбором сохраняется резервная копия обеих версий. Выполненные подходы защищены от потери.")
-                                .font(.caption).foregroundStyle(Color.gymMuted)
-                            if conflict.canChooseLocal {
-                                Button("Сохранить мою версию на сервере") { Task { await sync.resolveKeepingLocal() } }
-                                    .buttonStyle(.bordered).disabled(sync.isSyncing)
-                            }
-                            if conflict.canChooseServer {
-                                Button("Использовать серверную версию") { Task { await sync.resolveUsingServer() } }
-                                    .buttonStyle(.bordered).disabled(sync.isSyncing)
+                            if let history = conflict.history {
+                                Text(sync.store.trainingCalendar.historyDayLabel(for: history.local.startedAt))
+                                    .font(.caption).foregroundStyle(Color.gymMuted)
+                                Button("На iPhone · \(history.local.completedSets) подх.") { reviewedHistory = history.local }
+                                Button("На сервере · \(history.server.completedSets) подх.") { reviewedHistory = history.server }
+                                if conflict.canChooseLocal {
+                                    Button("Восстановить на сервере из iPhone") {
+                                        useServerHistory = false
+                                        confirmHistoryChoice = true
+                                    }.buttonStyle(.bordered).disabled(!auth.signedIn || sync.isSyncing)
+                                }
+                                if conflict.canChooseServer {
+                                    Button("Применить серверную версию на iPhone") {
+                                        useServerHistory = true
+                                        confirmHistoryChoice = true
+                                    }.buttonStyle(.bordered).disabled(!auth.signedIn || sync.isSyncing)
+                                }
+                            } else {
+                                Text("Перед выбором сохраняется резервная копия обеих версий. Выполненные подходы защищены от потери.")
+                                    .font(.caption).foregroundStyle(Color.gymMuted)
+                                if conflict.canChooseLocal {
+                                    Button("Сохранить мою версию на сервере") { Task { await sync.resolveKeepingLocal() } }
+                                        .buttonStyle(.bordered).disabled(!auth.signedIn || sync.isSyncing)
+                                }
+                                if conflict.canChooseServer {
+                                    Button("Использовать серверную версию") { Task { await sync.resolveUsingServer() } }
+                                        .buttonStyle(.bordered).disabled(!auth.signedIn || sync.isSyncing)
+                                }
                             }
                         } else {
                             Button { Task { await sync.synchronize(); await auth.refreshProfile() } } label: {
@@ -332,6 +384,23 @@ struct CloudSettingsView: View {
                 #endif
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }
         }.preferredColorScheme(.dark).tint(.gymLime)
+        .sheet(item: $reviewedHistory) { session in
+            HistoryDetail(session: session, calendar: sync.store.trainingCalendar)
+        }
+        .confirmationDialog(useServerHistory ? "Заменить тренировку на iPhone?" : "Заменить тренировку на сервере?",
+            isPresented: $confirmHistoryChoice, titleVisibility: .visible) {
+            Button("Заменить тренировку", role: .destructive) {
+                let useServer = useServerHistory
+                Task {
+                    if useServer { await sync.resolveUsingServer() }
+                    else { await sync.resolveKeepingLocal() }
+                }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text(useServerHistory ? "Текущая запись iPhone сохранится в резервной копии."
+                : "Сервер сохранит прежнюю запись в резервной копии перед восстановлением.")
+        }
         #if os(macOS)
         .frame(minWidth: 430, minHeight: 700)
         #endif

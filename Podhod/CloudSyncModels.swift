@@ -1,5 +1,16 @@
 import Foundation
 
+struct HistoryRecoveryRecord: Codable {
+    let session: WorkoutSession
+    let version: String
+}
+
+struct HistoryRecoveryWrite: Codable {
+    var requestID = UUID()
+    let expectedVersion: String
+    let session: WorkoutSession
+}
+
 struct TrainingTemplateRecord: Codable, Equatable {
     var revision: Int64
     var days: [TrainingDay]

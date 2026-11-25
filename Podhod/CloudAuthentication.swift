@@ -45,6 +45,8 @@ private struct CloudOAuthCredentials: Codable {
     let issuer: String
     let clientID: String
     var verifiedAccountID: String?
+
+    var requiresSignIn: Bool { accessToken.isEmpty }
 }
 
 private struct CloudOAuthTokenResponse: Decodable {
@@ -120,7 +122,7 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
     private(set) var profileError: String?
     var verifiedAccountID: String? { credentials?.verifiedAccountID }
 
-    @ObservationIgnored private var credentials: CloudOAuthCredentials?
+    private var credentials: CloudOAuthCredentials?
     @ObservationIgnored private var browserSession: ASWebAuthenticationSession?
     @ObservationIgnored private var browserContinuation: CheckedContinuation<URL, any Error>?
     @ObservationIgnored private var browserAnchor: ASPresentationAnchor?
@@ -140,8 +142,9 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
         super.init()
         do {
             credentials = try readCredentials()
-            signedIn = credentials != nil
+            signedIn = credentials?.requiresSignIn == false
             if signedIn { status = "Вход выполнен" }
+            if credentials?.requiresSignIn == true { status = "Нужно войти заново" }
         } catch {
             errorMessage = CloudAuthenticationError.storage.localizedDescription
         }
@@ -272,14 +275,11 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
     }
 
     func accessToken(forceRefresh: Bool = false) async throws -> String {
-        guard let saved = credentials else { throw CloudAuthenticationError.expired }
+        guard let saved = credentials, !saved.requiresSignIn else { throw CloudAuthenticationError.expired }
         if !forceRefresh, saved.expiresAt.timeIntervalSinceNow > 60 { return saved.accessToken }
         if let refreshTask { return try await refreshTask.value }
         guard let refreshToken = saved.refreshToken, !refreshToken.isEmpty else {
-            credentials = nil
-            signedIn = false
-            try? deleteCredentials()
-            status = "Нужно войти заново"
+            expireCredentials()
             throw CloudAuthenticationError.expired
         }
         let operation = generation
@@ -309,18 +309,43 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
         } catch {
             if operation == generation {
                 if (error as? CloudAuthenticationError) == .expired {
-                    credentials = nil
-                    signedIn = false
-                    try? deleteCredentials()
+                    expireCredentials()
+                } else {
+                    status = "Не удалось обновить вход"
+                    errorMessage = authenticationMessage(error)
                 }
-                status = "Нужно обновить вход"
-                errorMessage = authenticationMessage(error)
             }
             throw error
         }
     }
 
+    private func expireCredentials() {
+        errorMessage = CloudAuthenticationError.expired.localizedDescription
+        generation = UUID()
+        refreshTask = nil
+        if let saved = credentials, let accountID = saved.verifiedAccountID {
+            let localOnly = CloudOAuthCredentials(accessToken: "", refreshToken: nil, expiresAt: .distantPast,
+                issuer: saved.issuer, clientID: saved.clientID, verifiedAccountID: accountID)
+            credentials = localOnly
+            do { try storeCredentials(localOnly) }
+            catch { errorMessage = CloudAuthenticationError.storage.localizedDescription }
+        } else {
+            credentials = nil
+            try? deleteCredentials()
+        }
+        signedIn = false
+        accountDetails = nil
+        profileLoading = false
+        profileError = nil
+        status = "Нужно войти заново"
+    }
+
     func signOut() async {
+        do { try deleteCredentials() }
+        catch {
+            errorMessage = CloudAuthenticationError.storage.localizedDescription
+            return
+        }
         accountDetails = nil
         profileLoading = false
         profileError = nil
@@ -336,9 +361,7 @@ final class CloudAuthentication: NSObject, ASWebAuthenticationPresentationContex
         isBusy = true
         errorMessage = nil
         status = "Выходим…"
-        do { try deleteCredentials() }
-        catch { errorMessage = CloudAuthenticationError.storage.localizedDescription }
-        if let saved {
+        if let saved, !saved.requiresSignIn {
             do {
                 let provider = try await loadProvider()
                 if provider.configuration.issuer == saved.issuer,

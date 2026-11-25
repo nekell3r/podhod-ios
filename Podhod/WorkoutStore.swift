@@ -16,21 +16,21 @@ final class WorkoutStore {
             .appending(path: "training.json")
         archive = TrainingArchive()
         do {
-            if FileManager.default.fileExists(atPath: self.fileURL.path) {
-                let data = try Data(contentsOf: self.fileURL)
-                var loaded = try JSONDecoder().decode(TrainingArchive.self, from: data)
-                guard (1...7).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
-                guard loaded.week.map(\.weekday).sorted() == Array(1...7),
-                      loaded.week.allSatisfy({ $0.exercises.allSatisfy { (1...12).contains($0.setCount) } }),
-                      loaded.active.map({ !$0.exercises.isEmpty && $0.exercises.indices.contains($0.currentExercise) }) ?? true
-                else { throw TrainingError.invalidArchive }
-                guard loaded.active.map({ session in session.timing?.isValid(for: session) ?? true }) ?? true,
-                      loaded.history.allSatisfy({ $0.timing?.isValid(for: $0) ?? true }),
-                      loaded.hasValidSetRemovalIntents, loaded.hasValidStructure else { throw TrainingError.invalidArchive }
-                migrationSourceVersion = loaded.version < 7 ? loaded.version : nil
-                loaded.version = 7
-                archive = loaded
-            }
+            let data = try Data(contentsOf: self.fileURL)
+            var loaded = try JSONDecoder().decode(TrainingArchive.self, from: data)
+            guard (1...7).contains(loaded.version) else { throw TrainingError.unsupportedArchive }
+            guard loaded.week.map(\.weekday).sorted() == Array(1...7),
+                  loaded.week.allSatisfy({ $0.exercises.allSatisfy { (1...12).contains($0.setCount) } }),
+                  loaded.active.map({ !$0.exercises.isEmpty && $0.exercises.indices.contains($0.currentExercise) }) ?? true
+            else { throw TrainingError.invalidArchive }
+            guard loaded.active.map({ session in session.timing?.isValid(for: session) ?? true }) ?? true,
+                  loaded.history.allSatisfy({ $0.timing?.isValid(for: $0) ?? true }),
+                  loaded.hasValidSetRemovalIntents, loaded.hasValidStructure else { throw TrainingError.invalidArchive }
+            migrationSourceVersion = loaded.version < 7 ? loaded.version : nil
+            loaded.version = 7
+            archive = loaded
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // A new workspace has no training archive until its first save.
         } catch {
             loadFailed = true
             errorMessage = "Не удалось прочитать сохранение: \(error.localizedDescription) Данные не перезаписаны. Файл: \(self.fileURL.path)"
@@ -928,6 +928,22 @@ final class WorkoutStore {
         if incoming.isEmpty { return true }
         changed.history.append(contentsOf: incoming)
         changed.history.sort { $0.startedAt > $1.startedAt }
+        return save(changed)
+    }
+
+    func acceptRecoveredHistory(_ session: WorkoutSession, replacing expected: WorkoutSession) -> Bool {
+        guard session.id == expected.id, archive.active?.id != session.id,
+              let index = archive.history.firstIndex(of: expected),
+              session.finishedAt != nil, session.completedSets > 0, session.exercises.indices.contains(session.currentExercise),
+              session.hasValidStructure, session.timing?.isValid(for: session) ?? true else {
+            errorMessage = TrainingError.invalidArchive.localizedDescription
+            return false
+        }
+        var changed = archive
+        changed.history[index] = session
+        changed.history.sort { $0.startedAt > $1.startedAt }
+        changed.setRemovalIntents?.removeAll { $0.sessionID == session.id }
+        if changed.setRemovalIntents?.isEmpty == true { changed.setRemovalIntents = nil }
         return save(changed)
     }
 

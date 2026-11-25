@@ -59,8 +59,15 @@ struct CloudAccountView: View {
                     .buttonStyle(PrimaryButton()).disabled(auth.isBusy)
                 Button("Войти по логину") { Task { await auth.signIn() } }
                     .font(.subheadline.weight(.semibold)).disabled(auth.isBusy)
-                Text("Уже пользуешься «Подходом»? Войди прежним способом и привяжи Telegram в настройках аккаунта — тогда история останется в том же аккаунте.")
-                    .font(.caption).foregroundStyle(Color.gymMuted).lineSpacing(3)
+                if auth.verifiedAccountID != nil {
+                    Text("Архив доступен офлайн. Чтобы отправить изменения, войди в тот же аккаунт.")
+                        .font(.caption).foregroundStyle(Color.gymMuted)
+                    Button("Отключить аккаунт", role: .destructive) { Task { await auth.signOut() } }
+                        .font(.subheadline.weight(.semibold)).disabled(auth.isBusy)
+                } else {
+                    Text("Уже пользуешься «Подходом»? Войди прежним способом и привяжи Telegram в настройках аккаунта — тогда история останется в том же аккаунте.")
+                        .font(.caption).foregroundStyle(Color.gymMuted).lineSpacing(3)
+                }
             }
             Text("Вход откроется в системном браузере. Выход сохраняет архив аккаунта отдельно и открывает гостевой режим. Затем можно войти в другой аккаунт.")
                 .font(.caption).foregroundStyle(Color.gymMuted).lineSpacing(3)

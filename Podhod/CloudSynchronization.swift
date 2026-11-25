@@ -7,6 +7,7 @@ private struct TrainingSyncCheckpoint: Codable {
     var weeks: [TrainingWeek] = []
     var active: ActiveWorkoutRecord?
     var historyIDs: [UUID] = []
+    var pendingHistoryRecovery: HistoryRecoveryWrite?
     var proteinDays: [ProteinDayRecord]?
 }
 
@@ -16,6 +17,13 @@ struct TrainingSyncConflict {
     var message: String
     var canChooseServer: Bool
     var canChooseLocal: Bool
+    var history: HistoryConflict?
+}
+
+struct HistoryConflict {
+    let local: WorkoutSession
+    let server: WorkoutSession
+    let serverVersion: String?
 }
 
 @MainActor @Observable
@@ -49,6 +57,9 @@ final class CloudSynchronization {
             do {
                 let data = try Data(contentsOf: fileURL)
                 checkpoint = try JSONDecoder().decode(TrainingSyncCheckpoint.self, from: data)
+                if checkpoint.pendingHistoryRecovery != nil && checkpoint.accountID?.isEmpty != false {
+                    throw TrainingError.invalidArchive
+                }
                 lastCheckpointData = data
             }
             catch { checkpointError = "Не удалось прочитать состояние синхронизации. Локальные тренировки сохранены." }
@@ -56,10 +67,14 @@ final class CloudSynchronization {
     }
 
     var status: String {
-        if !auth.signedIn { return "Сохранено на iPhone" }
+        if store.loadFailed || store.accountStorageError != nil { return "Не удалось открыть локальные тренировки" }
+        if let checkpointError { return checkpointError }
+        if !auth.signedIn {
+            return auth.verifiedAccountID == nil ? "Сохранено на iPhone" : "Сохранено на iPhone · нужно войти для синхронизации"
+        }
+        if conflict?.history != nil { return message }
         if conflict != nil { return "Есть конфликт изменений" }
         if isSyncing { return "Синхронизация…" }
-        if let checkpointError { return checkpointError }
         if hasLocalChanges && message == "Синхронизировано" { return "Сохранено на iPhone · ожидает синхронизации" }
         return message
     }
@@ -84,7 +99,11 @@ final class CloudSynchronization {
     }
 
     func synchronize() async {
-        guard auth.signedIn, !isSyncing, conflict == nil, checkpointError == nil, !store.loadFailed else { return }
+        guard auth.signedIn, !isSyncing else { return }
+        if conflict != nil, let verifiedID = auth.verifiedAccountID, verifiedID == checkpoint.accountID {
+            _ = accountDiscovered?(verifiedID)
+            return
+        }
         isSyncing = true
         defer { isSyncing = false }
         let api = TrainingCloudAPI(auth: auth)
@@ -92,6 +111,7 @@ final class CloudSynchronization {
         do {
             let profile = try await api.profile()
             if accountDiscovered?(profile.id) == true { return }
+            guard conflict == nil, checkpointError == nil, !store.loadFailed, store.accountStorageError == nil else { return }
             guard checkpoint.accountID == nil || checkpoint.accountID == profile.id else {
                 message = "Этот iPhone связан с другим аккаунтом. Локальные данные не отправлены."
                 return
@@ -99,6 +119,9 @@ final class CloudSynchronization {
             if checkpoint.accountID == nil {
                 checkpoint.accountID = profile.id
                 try persistCheckpoint()
+            }
+            if let change = checkpoint.pendingHistoryRecovery {
+                try await sendHistoryRecovery(change, api: api)
             }
             if Date().timeIntervalSince(lastHistoryRead ?? .distantPast) >= 60 ||
                 store.archive.history.contains(where: { !checkpoint.historyIDs.contains($0.id) }) {
@@ -181,28 +204,26 @@ final class CloudSynchronization {
 
     private func synchronizeHistory(_ api: TrainingCloudAPI) async throws {
         let remote = try await api.history()
-        for session in remote {
-            if let local = store.archive.history.first(where: { $0.id == session.id }), !same(local, session) {
-                conflict = TrainingSyncConflict(resource: .history,
-                    message: "Одна завершённая тренировка отличается на сервере и телефоне. Обе версии сохранены; история не перезаписана.",
-                    canChooseServer: false, canChooseLocal: false)
-                try saveConflictBackup(remote: remote)
-                return
-            }
+        let localByID = Dictionary(store.archive.history.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let different = remote.first { session in
+            localByID[session.id].map { !same($0, session) } ?? false
         }
         if !remote.isEmpty { try requireSaved(store.mergeHistory(remote)) }
-        var known = Set(remote.map(\.id))
-        for session in store.archive.history where !known.contains(session.id) {
+        let remoteIDs = Set(remote.map(\.id))
+        var known = Set(remote.filter { session in
+            localByID[session.id].map { same($0, session) } ?? true
+        }.map(\.id))
+        var protectedConflict = false
+        for session in store.archive.history where !remoteIDs.contains(session.id) {
             do {
-                try await api.saveHistory(session, removedSetIDs: store.removedSetIDs(for: session))
+                let saved = try await api.saveHistory(session, removedSetIDs: store.removedSetIDs(for: session))
+                guard same(session, saved) else { throw CloudDocumentError.invalidResponse }
             } catch let failure as TrainingCloudFailure where failure.code == "set_removal_conflict" ||
                 failure.code == "upgrade_required" || failure.code == "superset_conflict" {
                 let active = try await api.active()
                 try saveConflictBackup(remote: active)
-                conflict = TrainingSyncConflict(resource: .history,
-                    message: "На сервере сохранились защищённые записи подходов, которых нет в завершённой тренировке iPhone. Обе версии сохранены для разбора; история не перезаписана.",
-                    canChooseServer: false, canChooseLocal: false)
-                return
+                protectedConflict = true
+                continue
             }
             known.insert(session.id)
         }
@@ -210,6 +231,55 @@ final class CloudSynchronization {
         checkpoint.historyIDs = known.sorted { $0.uuidString < $1.uuidString }
         lastHistoryRead = Date()
         try persistCheckpoint()
+        if let different, let local = localByID[different.id] {
+            do {
+                let record = try await api.historyRecovery(local.id)
+                if same(record.session, local) {
+                    lastHistoryRead = nil
+                    return
+                }
+                try showHistoryConflict(local: local, server: record.session, version: record.version)
+            } catch let failure as TrainingCloudFailure where failure.status == 404 {
+                try showHistoryConflict(local: local, server: different, version: nil)
+            }
+        } else if protectedConflict {
+            conflict = TrainingSyncConflict(resource: .history,
+                message: "В активной тренировке на сервере есть защищённые подходы. Завершённая копия на iPhone и серверная версия сохранены для восстановления.",
+                canChooseServer: false, canChooseLocal: false)
+        }
+    }
+
+    private func showHistoryConflict(local: WorkoutSession, server: WorkoutSession, version: String?) throws {
+        try saveConflictBackup(remote: server)
+        message = "Есть конфликт изменений"
+        conflict = TrainingSyncConflict(resource: .history,
+            message: version == nil ? "Версии завершённой тренировки отличаются. Обнови сервер, чтобы выбрать версию."
+                : "Версии завершённой тренировки отличаются. Открой обе записи перед выбором.",
+            canChooseServer: version != nil, canChooseLocal: version != nil && (local.structureVersion ?? 0) >= (server.structureVersion ?? 0),
+            history: HistoryConflict(local: local, server: server, serverVersion: version))
+    }
+
+    private func persistHistoryRecovery(_ change: HistoryRecoveryWrite?) throws {
+        let previous = checkpoint.pendingHistoryRecovery
+        checkpoint.pendingHistoryRecovery = change
+        do { try persistCheckpoint() }
+        catch {
+            checkpoint.pendingHistoryRecovery = previous
+            throw error
+        }
+    }
+
+    private func sendHistoryRecovery(_ change: HistoryRecoveryWrite, api: TrainingCloudAPI) async throws {
+        if let local = store.archive.history.first(where: { $0.id == change.session.id }), same(local, change.session) {
+            do {
+                let saved = try await api.recoverHistory(change)
+                guard same(change.session, saved.session) else { throw CloudDocumentError.invalidResponse }
+            } catch let failure as TrainingCloudFailure where failure.status == 409 {
+                // The server rejected the write. A fresh read must precede any new approval.
+            }
+        }
+        try persistHistoryRecovery(nil)
+        lastHistoryRead = nil
     }
 
     private func synchronizeCycle(_ api: TrainingCloudAPI) async throws {
@@ -381,11 +451,21 @@ final class CloudSynchronization {
     private func synchronizeActive(_ api: TrainingCloudAPI) async throws {
         let local = store.activeWorkoutState
         let remote = try await api.active()
+        guard same(store.activeWorkoutState, local) else { return }
         if same(local, remote.state) {
             checkpoint.active = remote
-        } else if let remoteSession = remote.state?.session,
-                  store.archive.history.contains(where: { $0.id == remoteSession.id }), local == nil {
-            checkpoint.active = try await api.saveActive(nil, revision: remote.revision)
+        } else if let remoteSession = remote.state?.session, local?.session.id != remoteSession.id,
+                  let finished = store.archive.history.first(where: { $0.id == remoteSession.id }) {
+            guard checkpoint.historyIDs.contains(finished.id) else { return }
+            guard finished.containsCompletedSets(from: remoteSession) else {
+                try saveConflictBackup(remote: remote)
+                activeConflict(local: local, remote: remote.state)
+                conflict?.canChooseServer = false
+                conflict?.canChooseLocal = false
+                return
+            }
+            checkpoint.active = try await api.saveActive(local, revision: remote.revision,
+                removedSetIDs: local.map { store.removedSetIDs(for: $0.session) } ?? [])
         } else if let known = checkpoint.active {
             if same(local, known.state) {
                 guard same(store.activeWorkoutState, local) else { return }
@@ -612,8 +692,27 @@ final class CloudSynchronization {
                 days.append(remote)
                 checkpoint.proteinDays = days.sorted { $0.date < $1.date }
             case .history:
-                isSyncing = false
-                return
+                guard let history = conflict.history, let version = history.serverVersion else {
+                    isSyncing = false
+                    return
+                }
+                let remote = try await api.historyRecovery(history.local.id)
+                guard let local = store.archive.history.first(where: { $0.id == history.local.id }),
+                      same(local, history.local), remote.version == version else {
+                    if let local = store.archive.history.first(where: { $0.id == history.local.id }) {
+                        try showHistoryConflict(local: local, server: remote.session, version: remote.version)
+                    }
+                    message = "Тренировка изменилась. Проверь актуальные версии и подтверди выбор заново."
+                    isSyncing = false
+                    return
+                }
+                try saveConflictBackup(remote: remote.session)
+                if useServer {
+                    try requireSaved(store.acceptRecoveredHistory(remote.session, replacing: local))
+                    lastHistoryRead = nil
+                } else {
+                    try persistHistoryRecovery(HistoryRecoveryWrite(expectedVersion: version, session: local))
+                }
             }
             try persistCheckpoint()
             self.conflict = nil
